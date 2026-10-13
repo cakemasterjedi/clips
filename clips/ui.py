@@ -91,8 +91,47 @@ def parse_ok(parser: argparse.ArgumentParser, argv: List[str]) -> None:
         raise ClipsError(msg[-1].split("error: ", 1)[-1] if msg else "invalid options") from None
 
 
+# Friendly names for the "Add an option" menu: flag -> (group, name, one-line description,
+# {choice: label}). Flags missing here still show up, under "Other", with their --help text.
+OPTION_GROUPS = ["Cutting", "Dialogue intro", "360 video", "Follow subject", "Export", "Other"]
+OPTION_INFO = {
+    "--beats-per-cut": ("Cutting", "Cut every N beats",
+                        "A fixed rhythm instead of the automatic one: 1 = every beat, 2 = every other beat.", {}),
+    "--intro": ("Dialogue intro", "Pick the intro by hand",
+                "Start with someone talking: clip@start-end, e.g. talk.mp4@0:03-0:09. Can be added more than once.", {}),
+    "--intro-max": ("Dialogue intro", "Longest automatic intro",
+                    "Seconds of talking the automatic intro may use (default 8).", {}),
+    "--music-in": ("Dialogue intro", "How the song comes in",
+                   "After the talking intro, the song fades up or hits at full volume.",
+                   {"rise": "fade up (rise)", "drop": "hit at full volume (drop)"}),
+    "--rise": ("Dialogue intro", "Fade-up length",
+               "Seconds the song takes to fade up under the talking (default 3).", {}),
+    "--360": ("360 video", "Treat clips as 360",
+              "auto = only .insv files and files tagged as 360. Use on for a 360 export that lost its tag.",
+              {"auto": "auto (.insv or 360 tag)", "on": "on (every clip is 360)", "off": "off (never)",
+               "equirect": "force equirectangular", "dfisheye": "force Insta360 dual fisheye"}),
+    "--yaw": ("360 video", "Look direction",
+              "Point every 360 shot this way, in degrees (0 = front, 90 = right, -90 = left).", {}),
+    "--pitch": ("360 video", "Look up or down",
+                "Degrees up (+) or down (-), used together with Look direction.", {}),
+    "--fov": ("360 video", "Field of view",
+              "How wide the 360 view is, in degrees (default 60; bigger = wider).", {}),
+    "--detector": ("Follow subject", "Detector size",
+                   "Model used by Follow subject: s is the most accurate, nano the fastest.",
+                   {"s": "s (most accurate)", "tiny": "tiny", "nano": "nano (fastest)"}),
+    "--device": ("Follow subject", "Run the detector on",
+                 "auto uses the GPU when a GPU build of ONNX Runtime is installed.",
+                 {"auto": "auto", "cpu": "CPU", "gpu": "GPU"}),
+    "--ollama-model": ("Follow subject", "Ollama model",
+                       "Vision model that reads Subject description (default qwen2.5vl).", {}),
+    "--export-edl": ("Export", "Save an EDL for Resolve / Premiere",
+                     "Also write the cut list as FILE.edl to fine-tune the edit in an editor.", {}),
+}
+
+
 def option_list() -> List[dict]:
-    """Every `clips` option without its own control on the page, for the "add an option" menu."""
+    """Every `clips` option without its own control on the page, for the "add an option" menu,
+    with a group, a plain-language name and a one-line description."""
     from .cli import build_parser
 
     out = []
@@ -101,10 +140,16 @@ def option_list() -> List[dict]:
             continue
         flag = max(act.option_strings, key=len)
         kind = "bool" if act.nargs == 0 else ("choice" if act.choices else "value")
-        out.append({"flag": flag, "kind": kind, "help": (act.help or "").replace("%%", "%"),
-                    "choices": [str(c) for c in act.choices] if act.choices else None,
-                    "metavar": act.metavar or "", "repeat": isinstance(act.default, list)})
-    return sorted(out, key=lambda o: o["flag"])
+        help_ = (act.help or "").replace("%%", "%")
+        group, label, desc, labels = OPTION_INFO.get(flag, ("Other", flag.lstrip("-").replace("-", " ").capitalize(),
+                                                            help_, {}))
+        out.append({"flag": flag, "kind": kind, "help": help_, "group": group, "label": label,
+                    "desc": desc, "choices": [str(c) for c in act.choices] if act.choices else None,
+                    "choice_labels": labels, "metavar": act.metavar or "",
+                    "repeat": isinstance(act.default, list)})
+    order = list(OPTION_INFO)
+    return sorted(out, key=lambda o: (OPTION_GROUPS.index(o["group"]),
+                                      order.index(o["flag"]) if o["flag"] in order else 99, o["label"]))
 
 
 def render_argv(form: dict, renders: Path) -> List[str]:
@@ -252,6 +297,35 @@ def group_cpu(pgid: int) -> Optional[float]:
         return None
 
 
+DRM = Path("/sys/class/drm")
+
+
+def gpu_busy(drm: Optional[Path] = None) -> Optional[int]:
+    """How busy the graphics card is right now, in percent, or None when it can't be read.
+    AMD (amdgpu) reports it in sysfs as cardN/device/gpu_busy_percent; NVIDIA through
+    nvidia-smi when it is installed. The busiest card wins. Whole-card load, not per job."""
+    root = Path(os.environ.get("CLIPS_DRM_ROOT", drm or DRM))
+    vals = []
+    try:
+        for d in root.iterdir():
+            if re.fullmatch(r"card\d+", d.name):
+                try:
+                    vals.append(int((d / "device" / "gpu_busy_percent").read_text().strip()))
+                except (OSError, ValueError):
+                    pass
+    except OSError:
+        pass
+    if not vals and drm is None and shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu",
+                                  "--format=csv,noheader,nounits"], capture_output=True,
+                                 text=True, timeout=2).stdout
+            vals = [int(x) for x in out.split() if x.isdigit()]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return max(vals) if vals else None
+
+
 class Job:
     _ids = itertools.count(1)
 
@@ -327,6 +401,10 @@ class Jobs:
     def snapshot(self) -> List[dict]:
         with self.lock:
             return [j.to_dict() for j in reversed(self.items)]
+
+    def busy(self) -> bool:
+        with self.lock:
+            return any(j.status == "running" and j.kind != "frame" for j in self.items)
 
     def cancel(self, job: Job) -> None:
         job.cancelled = True
@@ -588,6 +666,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"workdir": str(srv.workdir), "boot": srv.boot,
                                     "version": srv.version, "ncpu": os.cpu_count() or 1,
                                     "can_update": UPDATER.is_file(),
+                                    "gpu_busy": gpu_busy() if srv.jobs.busy() else None,
                                     "renders": renders_list(srv.renders),
                                     "profiles": profiles_list(srv.profiles),
                                     "jobs": srv.jobs.snapshot()})

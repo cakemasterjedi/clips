@@ -226,7 +226,7 @@ def serve(clip: Path, mode360: str = "auto", port: int = 8360, browser: bool = T
     view = RF.detect_view(clip, info, mode360)
     if not view.is360:
         raise ClipsError(f"{clip.name} does not look like 360 footage "
-                         "(use --360 equirect or --360 dfisheye to force)")
+                         "(use --360 on, or --360 equirect / dfisheye to force a layout)")
     proxy = make_proxy(clip, view, cache, width)
     try:
         srv = FrameServer(clip, proxy, clip_meta(clip, info, view), port)

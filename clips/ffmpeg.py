@@ -83,12 +83,27 @@ class ProbeInfo:
     height: Optional[int]
     fps: Optional[float] = None
     video_streams: int = 0
-    spherical: bool = False     # 360 metadata (e.g. "spherical: equirectangular" side data)
+    spherical: bool = False     # equirectangular 360 metadata (see spherical_of)
 
 
 _DUR = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 _RES = re.compile(r"(?<![\w])(\d{2,5})x(\d{2,5})(?=[,\s\[])")
 _FPS = re.compile(r"(\d+(?:\.\d+)?)\s*fps")
+# 360 metadata as `ffmpeg -i` prints it: the spherical side data FFmpeg builds from st3d/sv3d
+# (MP4), the v1 Spherical XML (GSpherical uuid box) and Matroska ProjectionType, or the same
+# information left as a plain tag. Only equirectangular layouts count (v360 input=e).
+_SPH_SIDE = re.compile(r"^\s*spherical(?:\s+mapping)?\s*:\s*([a-z ]+)", re.I)
+_SPH_TAG = re.compile(r"^\s*(?:gspherical:)?projection_?type\s*:\s*([a-z ]+)", re.I)
+
+
+def spherical_of(stderr: str) -> bool:
+    """True when the probe output carries equirectangular 360 metadata. The file name and
+    other free text are not looked at, so a movie called "spherical.mkv" stays flat."""
+    for line in stderr.splitlines():
+        m = _SPH_SIDE.match(line) or _SPH_TAG.match(line)
+        if m and "equirect" in m.group(1).lower():
+            return True
+    return False
 
 
 def parse_probe(stderr: str) -> ProbeInfo:
@@ -117,7 +132,7 @@ def parse_probe(stderr: str) -> ProbeInfo:
         elif ": Audio:" in s:
             has_audio = True
     return ProbeInfo(duration, has_video, has_audio, width, height, fps, nvid,
-                     "spherical" in stderr.lower())
+                     spherical_of(stderr))
 
 
 def probe(path) -> ProbeInfo:
