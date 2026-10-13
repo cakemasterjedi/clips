@@ -64,7 +64,7 @@ FLAGS = {"smart_pick": "--smart-pick", "loop": "--loop", "ramp": "--ramp", "prev
 # text/select name -> flag (empty = left out)
 VALUES = {"duration": "--duration", "fps": "--fps", "fit": "--fit", "variations": "--variations",
           "subject": "--subject", "subject_desc": "--subject-desc", "sub_style": "--sub-style",
-          "seed": "--seed", "style": "--style", "zoom": "--zoom", "bpm": "--bpm"}
+          "seed": "--seed", "style": "--style", "zoom": "--zoom", "bpm": "--bpm", "gpu": "--gpu"}
 # flags with their own control on the page (left out of the "add an option" list)
 FORM_DESTS = {"input", "audio", "output", "help", "no_music", "mute", "audio_start", "subs",
               "dry_run", *FLAGS, *VALUES}
@@ -532,6 +532,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, list_dir(q.get("path", ""), q.get("kind", "")))
         if u.path == "/api/options":
             return self._json(200, option_list())
+        if u.path == "/api/gpu":
+            from .gpu import detect
+
+            gpu, why = detect()
+            return self._json(200, {"available": gpu is not None, "detail": why})
         if m := re.fullmatch(r"/api/jobs/(\d+)/log", u.path):
             job = srv.jobs.get(int(m.group(1)))
             if job is None or not job.logfile or not job.logfile.is_file():

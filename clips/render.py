@@ -4,13 +4,15 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 from .audio import Plan
-from .ffmpeg import run_ffmpeg
+from .ffmpeg import ClipsError, run_ffmpeg
+from .gpu import Gpu, global_args, input_args, upload, video_codec
 from .sources import Assignment, Source
 from .reframe import View, input_labels, animate, still, track_crop, view_graph
 from .subs import escape_filter_path, prepare_subs
@@ -23,6 +25,7 @@ PUNCH_ZOOM = 0.12
 PREVIEW_SIZE = (270, 480)   # --preview renders shots at quarter size, upscaled in the final pass
 PREVIEW_X264 = ["-preset", "ultrafast", "-crf", "30"]
 FINAL_X264 = ["-preset", "medium", "-crf", "20"]
+SEGMENT_X264 = ["-preset", "veryfast", "-crf", "18"]
 RAMP_DUR = 0.5            # s of output at the end of a lead-in shot played in slow motion
 RAMP_SPEED = 0.4
 LOOP_BLEND = 0.25         # s; the last shot dissolves into the opening frame (--loop)
@@ -126,25 +129,27 @@ def segment_args(src: Path, a: Assignment, frames: int, fps: int, out: Path,
                  punch_zoom: float = PUNCH_ZOOM,
                  blend_to: Optional[Tuple[Path, float]] = None, preview: bool = False,
                  ramp: bool = False, view: Optional[View] = None,
-                 blend_view: Optional[View] = None, zoom: float = 1.0) -> List[str]:
-    args = ["-y"]
+                 blend_view: Optional[View] = None, zoom: float = 1.0,
+                 gpu: Optional[Gpu] = None) -> List[str]:
+    args = ["-y", *global_args(gpu)]
+    hw = input_args(gpu)
     loop = ["-stream_loop", "-1"] if a.loop else []
-    args += loop + ["-ss", f"{a.start:.6f}", "-i", str(src)]
+    args += loop + hw + ["-ss", f"{a.start:.6f}", "-i", str(src)]
     if view is not None and view.lenses == "pair" and view.pair is not None:
-        args += loop + ["-ss", f"{a.start:.6f}", "-i", str(view.pair)]
+        args += loop + hw + ["-ss", f"{a.start:.6f}", "-i", str(view.pair)]
     blend_at = None
     if blend_to is not None:
-        args += ["-ss", f"{blend_to[1]:.6f}", "-i", str(blend_to[0])]
+        args += hw + ["-ss", f"{blend_to[1]:.6f}", "-i", str(blend_to[0])]
         if blend_view is not None and blend_view.lenses == "pair" and blend_view.pair is not None:
-            args += ["-ss", f"{blend_to[1]:.6f}", "-i", str(blend_view.pair)]
+            args += hw + ["-ss", f"{blend_to[1]:.6f}", "-i", str(blend_view.pair)]
         blend_at = max(frames / fps - LOOP_BLEND, 0.0)
     args += ["-frames:v", str(frames), "-an",
-             "-filter_complex", segment_filter(fit, fps, punch, flash, punch_zoom, blend_at,
-                                               PREVIEW_SIZE if preview else (1080, 1920),
-                                               frames / fps if ramp else None, preview,
-                                               view, blend_view, frames / fps, zoom),
+             "-filter_complex", upload(segment_filter(fit, fps, punch, flash, punch_zoom, blend_at,
+                                                      PREVIEW_SIZE if preview else (1080, 1920),
+                                                      frames / fps if ramp else None, preview,
+                                                      view, blend_view, frames / fps, zoom), gpu),
              "-map", "[v]",
-             "-c:v", "libx264", *(PREVIEW_X264 if preview else ["-preset", "veryfast", "-crf", "18"]),
+             *video_codec(gpu, 30 if preview else 18, PREVIEW_X264 if preview else SEGMENT_X264),
              "-r", str(fps), str(out)]
     return args
 
@@ -160,15 +165,16 @@ def _video_chain(ass: Optional[Path], preview: bool = False) -> str:
 
 
 def final_args(listfile: Path, audio: Path, audio_start: float, length: float, fps: int,
-               ass: Optional[Path], out: Path, fade: float = FADE, preview: bool = False) -> List[str]:
+               ass: Optional[Path], out: Path, fade: float = FADE, preview: bool = False,
+               gpu: Optional[Gpu] = None) -> List[str]:
     fin = f"afade=t=in:st=0:d={fade}," if fade < FADE else ""   # loop: no click at the restart
-    fc = (f"{_video_chain(ass, preview)};"
+    fc = (f"{upload(_video_chain(ass, preview), gpu)};"
           f"[1:a]atrim=duration={length:.6f},asetpts=PTS-STARTPTS,{fin}"
           f"afade=t=out:st={max(length - fade, 0):.6f}:d={fade}[a]")
-    return ["-y", "-f", "concat", "-safe", "0", "-i", str(listfile),
+    return ["-y", *global_args(gpu), "-f", "concat", "-safe", "0", "-i", str(listfile),
             "-ss", f"{audio_start:.6f}", "-i", str(audio),
             "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
-            "-c:v", "libx264", *(PREVIEW_X264 if preview else FINAL_X264), "-pix_fmt", "yuv420p",
+            *video_codec(gpu, 30 if preview else 20, PREVIEW_X264 if preview else FINAL_X264),
             "-c:a", "aac", "-b:a", "192k", "-r", str(fps), "-movflags", "+faststart",
             "-t", f"{length:.6f}", str(out)]
 
@@ -289,16 +295,18 @@ def intro_audio_graph(lengths: Sequence[float], total: float, t_intro: float, ri
 
 def final_args_intro(listfile: Path, audio: Path, audio_start: float, total: float, fps: int,
                      ass: Optional[Path], out: Path, intro: IntroAudio, t_intro: float,
-                     fade: float = FADE, preview: bool = False) -> List[str]:
+                     fade: float = FADE, preview: bool = False,
+                     gpu: Optional[Gpu] = None) -> List[str]:
     rise, _ = effective_rise(intro.rise, audio_start, t_intro, intro.music_in)
     lengths = [L for _, _, L in intro.regions]
-    fc = _video_chain(ass, preview) + ";" + intro_audio_graph(lengths, total, t_intro, rise, fade)
-    args = ["-y", "-f", "concat", "-safe", "0", "-i", str(listfile),
+    fc = (upload(_video_chain(ass, preview), gpu) + ";" +
+          intro_audio_graph(lengths, total, t_intro, rise, fade))
+    args = ["-y", *global_args(gpu), "-f", "concat", "-safe", "0", "-i", str(listfile),
             "-ss", f"{audio_start - rise:.6f}", "-i", str(audio)]
     for src, st, L in intro.regions:
         args += ["-ss", f"{st:.6f}", "-t", f"{L:.6f}", "-i", str(src)]
     args += ["-filter_complex", fc, "-map", "[v]", "-map", "[a]",
-             "-c:v", "libx264", *(PREVIEW_X264 if preview else FINAL_X264), "-pix_fmt", "yuv420p",
+             *video_codec(gpu, 30 if preview else 20, PREVIEW_X264 if preview else FINAL_X264),
              "-c:a", "aac", "-b:a", "192k", "-r", str(fps), "-movflags", "+faststart",
              "-t", f"{total:.6f}", str(out)]
     return args
@@ -340,8 +348,32 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
            word_reveal: bool = False, intro: Optional[IntroAudio] = None,
            punch_zoom: float = PUNCH_ZOOM, loop: bool = False, preview: bool = False,
            loudnorm: bool = True, views: Optional[Sequence[Optional[View]]] = None,
-           zoom: float = 1.0) -> None:
+           zoom: float = 1.0, gpu: Optional[Gpu] = None, gpu_required: bool = False) -> None:
     workers = workers or max(1, (os.cpu_count() or 2) // 2)
+    hw = {"gpu": gpu}
+    lock = threading.Lock()
+
+    def encode(build) -> None:
+        """Run build(gpu) on the GPU; if that fails (and the GPU was not required), say so
+        once and run it and everything after it on the CPU."""
+        g = hw["gpu"]
+        if g is not None:
+            try:
+                run_ffmpeg(build(g))
+                return
+            except ClipsError as exc:
+                if gpu_required:
+                    raise
+                with lock:
+                    if hw["gpu"] is not None:
+                        hw["gpu"] = None
+                        last = str(exc).strip().splitlines()[-1]
+                        print(f"gpu: encode failed ({last}), continuing on the CPU",
+                              file=sys.stderr, flush=True)
+        run_ffmpeg(build(None))
+
+    if gpu is not None:
+        print(f"gpu: decoding and encoding with VAAPI on {gpu.device}", file=sys.stderr)
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="clips_") as tmp:
@@ -367,9 +399,9 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
                 else:
                     vw = still(vw)
             bv = still(views[0]) if views and blend and views[0] is not None else None
-            run_ffmpeg(segment_args(sources[a.source].path, a, sh.frames, plan.fps, segs[i],
-                                    fit, sh.punch, sh.flash, punch_zoom, blend, preview,
-                                    sh.ramp, vw, bv, zoom))
+            encode(lambda g: segment_args(sources[a.source].path, a, sh.frames, plan.fps, segs[i],
+                                          fit, sh.punch, sh.flash, punch_zoom, blend, preview,
+                                          sh.ramp, vw, bv, zoom, g))
 
         print(f"rendering {len(segs)} shots with {workers} workers...", file=sys.stderr)
         with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -383,12 +415,12 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
         if intro:
             for note in effective_rise(intro.rise, audio_start, plan.t_intro, intro.music_in)[1]:
                 print(note, file=sys.stderr)
-            run_ffmpeg(final_args_intro(lst, Path(audio).resolve(), audio_start, plan.output_len,
-                                        plan.fps, ass, out.resolve(), intro, plan.t_intro,
-                                        fade, preview))
+            encode(lambda g: final_args_intro(lst, Path(audio).resolve(), audio_start,
+                                              plan.output_len, plan.fps, ass, out.resolve(),
+                                              intro, plan.t_intro, fade, preview, g))
         else:
-            run_ffmpeg(final_args(lst, Path(audio).resolve(), audio_start, plan.output_len,
-                                  plan.fps, ass, out.resolve(), fade, preview))
+            encode(lambda g: final_args(lst, Path(audio).resolve(), audio_start, plan.output_len,
+                                        plan.fps, ass, out.resolve(), fade, preview, g))
     if loudnorm:
         was = normalize_loudness(out.resolve(), plan.output_len)
         if was is not None:
