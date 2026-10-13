@@ -220,15 +220,27 @@ def test_page_in_browser(tmp_path, media):
         srv.shutdown()
 
 
-def test_lan_host(tmp_path):
+def test_lan_host(tmp_path, monkeypatch):
     srv = ui.serve(tmp_path / "work", 0, False, host="0.0.0.0")
     try:
-        assert not srv.local_only and srv.lan_urls()
-        assert req(srv, "GET", "/api/state", headers={"Host": "192.168.1.20:8361"})[0] == 200
+        assert not srv.local_only and srv.key and srv.lan_urls()[0].endswith("?key=" + srv.key)
+        assert req(srv, "GET", "/api/state")[0] == 200          # from this PC: no key needed
+        monkeypatch.setattr(ui, "is_loopback", lambda h: False)  # requests "from the LAN"
+        lan = {"Host": "192.168.1.20:8361"}
+        assert req(srv, "GET", "/api/state", headers=lan)[0] == 403
+        assert req(srv, "GET", "/?key=wrong", headers=lan)[0] == 403
+        st, _, r = req(srv, "GET", "/?key=" + srv.key, headers=lan)
+        assert st == 303 and r.getheader("Location") == "/"
+        ck = {**lan, "Cookie": r.getheader("Set-Cookie").split(";")[0]}
+        assert req(srv, "GET", "/api/state", headers=ck)[0] == 200
+        assert req(srv, "POST", "/api/render", {}, ck)[0] == 400
+        assert req(srv, "POST", "/api/render", {}, {**ck, "X-Clips": ""})[0] == 403
     finally:
         srv.shutdown()
+    monkeypatch.undo()
     srv = ui.serve(tmp_path / "work", 0, False)
     try:
-        assert srv.local_only and srv.lan_urls() == []
+        assert srv.local_only and srv.key is None and srv.lan_urls() == []
+        assert req(srv, "GET", "/api/state")[0] == 200
     finally:
         srv.shutdown()

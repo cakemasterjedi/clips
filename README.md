@@ -40,8 +40,9 @@ shows up in the style list when done) and open `clips frame` on a 360 clip. Rend
 styles are kept in `~/Videos/clips` (`--workdir` to change, `--port`, `--no-browser`).
 Anything without its own control goes in "Extra flags". Keep the terminal open while you use
 the page. It only answers on this PC; to open it from a phone or another computer on your
-network run `clips ui --host 0.0.0.0` and use the address it prints (anyone on the network can
-then use it, and the 360 framing tool still opens on this PC only).
+network run `clips ui --host 0.0.0.0` and open the full link it prints (it carries a random
+key; anyone with that link can use clips on your PC). If it does not load, open the port in
+your firewall (`sudo ufw allow 8361/tcp`). The 360 framing tool still opens on this PC only.
 
 ## Usage
 
