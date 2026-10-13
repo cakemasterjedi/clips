@@ -28,6 +28,8 @@ main() {
 
   say "Refreshing requirements"
   .venv/bin/python -m pip install -q -r requirements.txt
+  # Sites like TikTok change often; keep the downloader (and its browser impersonation) current.
+  .venv/bin/python -m pip install -q -U "yt-dlp[default,curl-cffi]"
   .venv/bin/python -m pip install -q --no-deps -e .
   # Vision extras only when the CPU build was installed by ./install.sh --vision;
   # a GPU build (directml, migraphx, gpu) you swapped in yourself is left alone.

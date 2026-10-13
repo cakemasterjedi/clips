@@ -80,7 +80,9 @@
 </style>
 </head>
 <body>
-<header><h1>clips</h1><span id="workdir"></span></header>
+<header><h1>clips</h1><span id="version"></span><span id="workdir" style="flex:1"></span>
+  <button class="small hidden" id="update" title="Pull the latest clips from GitHub, refresh its packages and restart this page's server">Update clips</button>
+  <span class="err" id="update-err" style="margin:0"></span></header>
 <main>
 <section>
   <div class="box">
@@ -167,8 +169,13 @@
     <h2>Learn a creator style</h2>
     <label>Links or video paths (one per line)</label>
     <textarea id="links" placeholder="https://www.tiktok.com/@creator/video/..."></textarea>
-    <label>Style name</label>
-    <div class="row"><input type="text" id="learn_name" placeholder="creator"><button class="go" id="learn">Learn</button></div>
+    <div class="grid2">
+      <div><label>Style name</label><input type="text" id="learn_name" placeholder="creator"></div>
+      <div><label>Browser cookies (if a site blocks it)</label>
+        <select id="cookies"><option value="">none</option><option>firefox</option><option>chrome</option>
+          <option>chromium</option><option>brave</option><option>edge</option><option>opera</option><option>vivaldi</option></select></div>
+    </div>
+    <div class="row" style="margin-top:8px"><span class="hint">Cookies come from a browser on the PC running clips where you are logged in.</span><button class="go" id="learn">Learn</button></div>
     <div class="err" id="learn-err"></div>
   </div>
 
@@ -220,7 +227,7 @@ async function post(url, body) {
 }
 
 // ---- remember the form between visits
-const KEEP = ["input","music","audio","duration","start_mode","start_at","bpm","zoom","style","variations","captions",
+const KEEP = ["cookies","input","music","audio","duration","start_mode","start_at","bpm","zoom","style","variations","captions",
   "subs","sub_style","word_reveal","preview","smart_pick","loop","ramp","punch","flash","shuffle","auto_frame",
   "subject","subject_desc","fps","fit","seed","no_intro","no_loudnorm","extra","clip"];
 let options = [], chosen = [];
@@ -387,7 +394,11 @@ async function act(btn, errId, url, body) {
   finally { btn.disabled = false; }
 }
 $("render").onclick = () => act($("render"), "render-err", "/api/render", form());
-$("learn").onclick = () => act($("learn"), "learn-err", "/api/learn", {links: $("links").value, name: $("learn_name").value});
+$("learn").onclick = () => act($("learn"), "learn-err", "/api/learn", {links: $("links").value, name: $("learn_name").value, cookies: $("cookies").value});
+$("update").onclick = () => {
+  if (!confirm("Update clips now? Renders already queued finish first, then the page's server restarts with the new version.")) return;
+  act($("update"), "update-err", "/api/update", {});
+};
 $("frame").onclick = () => act($("frame"), "frame-err", "/api/frame", {clip: $("clip").value.trim()});
 
 // ---- live jobs: one card per job, updated in place; the log only appends
@@ -415,11 +426,12 @@ function updateJob(j) {
   const live = j.status === "running" || j.status === "queued";
   const st = el.querySelector(".st");
   st.className = "st " + j.status;
-  st.textContent = j.status + (j.kind === "render" && live && j.progress ? " " + Math.round(j.progress * 100) + "%" : "");
+  const showBar = (j.kind === "render" || j.kind === "learn") && live;
+  st.textContent = j.status + (showBar && j.progress ? " " + Math.round(j.progress * 100) + "%" : "");
   const cancel = el.querySelector(".cancel");
   cancel.classList.toggle("hidden", !live);
   cancel.textContent = j.kind === "frame" && j.status === "running" ? "Stop" : "Cancel";
-  el.querySelector(".bar").classList.toggle("hidden", !(j.kind === "render" && live));
+  el.querySelector(".bar").classList.toggle("hidden", !showBar);
   el.querySelector(".bar i").style.width = Math.round(j.progress * 100) + "%";
   // heartbeat: elapsed, time since the last line, CPU used by clips + ffmpeg
   let beat = "";
@@ -428,7 +440,9 @@ function updateJob(j) {
     const [t0, u0] = c.cpu[0], busy = j.cpu != null && u0 != null && Date.now() > t0 ? (j.cpu - u0) / ((Date.now() - t0) / 1000) : null;
     const working = busy == null ? null : busy > 0.05;
     beat = `<span class="pulse ${working !== false ? "on" : ""}"></span>running <b>${dur(j.elapsed)}</b> · last output <b>${dur(j.idle)}</b> ago`;
-    if (busy != null) beat += ` · CPU <b>${Math.round(busy * 100)}%</b>`;
+    if (j.eta != null) beat += ` · about <b>${dur(j.eta)}</b> left`;
+    else if (showBar) beat += " · time left: estimating";
+    if (busy != null) beat += ` · CPU <b>${Math.min(100, Math.round(busy * 100 / ncpu))}%</b> of the PC`;
     if (j.idle > 120 && working === false) beat += ` <span class="warn">· no output and no CPU use for a while: it may be stuck</span>`;
     else if (j.idle > 30) beat += " · still working (long steps print nothing)";
   } else if (j.status === "queued") beat = "waiting for the job before it";
@@ -485,10 +499,15 @@ function renderProfiles(items) {
   const want = ['<option value="">none</option>'].concat(items.map((p) => `<option value="${esc(p.path)}">${esc(p.name)}</option>`)).join("");
   if (sel.innerHTML !== want) { sel.innerHTML = want; sel.value = cur; }
 }
+let boot = null, ncpu = 1;
 async function refresh() {
   try {
     const s = await fetch("/api/state").then((r) => r.json());
+    if (boot && s.boot !== boot) { location.reload(); return; }     // restarted after an update
+    boot = s.boot; ncpu = s.ncpu || 1;
     $("workdir").textContent = "renders and styles in " + s.workdir;
+    $("version").textContent = s.version ? "version " + s.version : "";
+    $("update").classList.toggle("hidden", !s.can_update);
     renderProfiles(s.profiles);
     renderJobs(s.jobs);
     renderList(s.renders);
