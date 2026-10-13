@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 from .audio import Plan
-from .ffmpeg import ClipsError, run_ffmpeg
+from .ffmpeg import ClipsError, cpu_count, run_ffmpeg
 from .gpu import Gpu, global_args, input_args, upload, video_codec
 from .sources import Assignment, Source
 from .reframe import View, input_labels, animate, still, track_crop, view_graph
@@ -349,7 +349,7 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
            punch_zoom: float = PUNCH_ZOOM, loop: bool = False, preview: bool = False,
            loudnorm: bool = True, views: Optional[Sequence[Optional[View]]] = None,
            zoom: float = 1.0, gpu: Optional[Gpu] = None, gpu_required: bool = False) -> None:
-    workers = workers or max(1, (os.cpu_count() or 2) // 2)
+    workers = workers or max(1, cpu_count() // 2)
     hw = {"gpu": gpu}
     lock = threading.Lock()
 

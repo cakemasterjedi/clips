@@ -29,6 +29,23 @@ def ffmpeg_exe() -> str:
         raise ClipsError(f"no ffmpeg found on PATH or via imageio-ffmpeg: {exc}")
 
 
+def cpu_count() -> int:
+    """CPUs this process may really use: the affinity mask (container cpuset) capped by a
+    cgroup v2 CPU quota (e.g. a Proxmox/LXC or Docker CPU limit), where os.cpu_count() would
+    report every core of the host."""
+    try:
+        n = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        n = os.cpu_count() or 2
+    try:
+        quota, period = open("/sys/fs/cgroup/cpu.max").read().split()[:2]
+        if quota != "max":
+            n = min(n, max(1, int(-(-int(quota) // int(period)))))
+    except (OSError, ValueError):
+        pass
+    return max(1, n)
+
+
 def verbose() -> bool:
     return os.environ.get("CLIPS_VERBOSE", "") not in ("", "0")
 

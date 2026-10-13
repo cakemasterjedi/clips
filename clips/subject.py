@@ -415,7 +415,9 @@ def _cmd(path: Path, view: RF.View, duration: float, vf: str) -> List[str]:
     inp, inp2 = RF.input_labels(view, 0)
     if view.is360:
         pre, opts = RF.unwrap_graph(view, inp, inp2, "u").split("|")
-        conv = "" if view.kind == "equirect" else f"v360={opts}:output=e,"
+        # unwrap straight to the analysis size, not a full-size (5.7K) equirect per frame
+        conv = ("" if view.kind == "equirect" else
+                f"v360={opts}:output=e:w={EQ_W}:h={EQ_H}:interp=linear,")
         fc = f"{pre};[u]fps={1 / STEP:g},{conv}{vf}[o]"
     else:
         fc = f"[{inp}]fps={1 / STEP:g},{vf}[o]"

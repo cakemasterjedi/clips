@@ -39,6 +39,7 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 
 from .ffmpeg import ClipsError, ffmpeg_exe
+from .gpu import analysis_input_args
 
 FISHEYE_FOV = 200.0       # Insta360 X-series lens field of view (deg), per lens
 H_FOV = 60.0              # default horizontal field of view of the 9:16 view
@@ -47,6 +48,7 @@ SEAM_WEIGHT = 0.3
 MAX_PITCH = 30.0
 AW, AH = 256, 128         # analysis strip (equirectangular)
 AFPS = 6
+TILT_MIN = 1.0            # deg; animated pitch range below this is held still (within 0.5 deg)
 TRACK_W = 160             # analysis width for tracked crop
 EQ_SIZE = (3840, 1920)    # equirect working size for keyframed views (default)
 EQ_MAX_W = 5760
@@ -228,7 +230,10 @@ def animate(view: View, frames: int, fps: int, size: Tuple[int, int],
     vals = [interpolate(view.keys or [], view.start + i / fps) for i in range(frames)]
     max_roll = max((abs(v[3]) for v in vals), default=0.0)
     canvas = roll_canvas(size, max_roll) if max_roll >= 0.01 else None
-    tilt = len({round(v[1], 2) for v in vals}) > 1
+    pitches = [v[1] for v in vals] or [view.pitch]
+    # a pitch that barely moves is held at its middle: the moving-pitch pass costs ~2x the shot
+    tilt = max(pitches) - min(pitches) >= TILT_MIN
+    pitch = view.pitch if tilt else round((max(pitches) + min(pitches)) / 2, 2)
     fovs = [round(v[2], 2) for v in vals]
     zoom = (max(fovs), min(fovs)) if len(set(fovs)) > 1 else None
     ew = view.eq[0]
@@ -251,7 +256,7 @@ def animate(view: View, frames: int, fps: int, size: Tuple[int, int],
                 lines.append(f"{max(0.0, (i - 0.5) / fps):.6f} " + ", ".join(cmds) + ";")
         last = cur
     return ("".join(l + "\n" for l in lines),
-            replace(view, canvas=canvas, tilt=tilt, zoom=zoom))
+            replace(view, canvas=canvas, tilt=tilt, zoom=zoom, pitch=pitch))
 
 
 def _scroll(angle: float, w: int) -> int:
@@ -391,9 +396,10 @@ def _read(args: Sequence[str], w: int, h: int) -> np.ndarray:
 
 
 def window_inputs(path: Path, view: View, start: float, length: float) -> List[str]:
-    ins = ["-ss", f"{start:.6f}", "-t", f"{length:.6f}", "-i", str(path)]
+    hw = analysis_input_args()
+    ins = [*hw, "-ss", f"{start:.6f}", "-t", f"{length:.6f}", "-i", str(path)]
     if view.kind == "dfisheye" and view.lenses == "pair" and view.pair is not None:
-        ins += ["-ss", f"{start:.6f}", "-t", f"{length:.6f}", "-i", str(view.pair)]
+        ins += [*hw, "-ss", f"{start:.6f}", "-t", f"{length:.6f}", "-i", str(view.pair)]
     return ins
 
 
@@ -401,7 +407,9 @@ def strip_frames(path: Path, view: View, start: float, length: float) -> np.ndar
     """Small equirectangular gray frames of the window (AW x AH at AFPS)."""
     inp, inp2 = input_labels(view, 0)
     pre, opts = unwrap_graph(view, inp, inp2, "u").split("|")
-    conv = "" if view.kind == "equirect" else f"v360={opts}:output=e,"
+    # straight to twice the strip size: a full-size equirect (5.7K) per frame cost seconds a shot
+    conv = ("" if view.kind == "equirect" else
+            f"v360={opts}:output=e:w={2 * AW}:h={2 * AH}:interp=linear,")
     fc = f"{pre};[u]fps={AFPS},{conv}scale={AW}:{AH}[o]"
     return _read(window_inputs(path, view, start, length) + ["-filter_complex", fc, "-map", "[o]"],
                  AW, AH)
@@ -467,6 +475,7 @@ def motion_track(frames: np.ndarray) -> Tuple[float, float, float, float]:
 
 def track_view(path: Path, start: float, length: float, src_w: int, src_h: int) -> View:
     th = max(2, int(round(TRACK_W * src_h / max(src_w, 1) / 2)) * 2)
-    frames = _read(["-ss", f"{start:.6f}", "-t", f"{length:.6f}", "-i", str(path), "-an",
+    frames = _read([*analysis_input_args(), "-ss", f"{start:.6f}", "-t", f"{length:.6f}",
+                    "-i", str(path), "-an",
                     "-vf", f"fps={AFPS * 2},scale={TRACK_W}:{th}"], TRACK_W, th)
     return View(track=motion_track(frames))
