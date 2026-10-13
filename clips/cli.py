@@ -13,6 +13,16 @@ from .ffmpeg import ClipsError, probe
 from .subs import check_subs_path
 
 
+def audio_start_arg(v: str):
+    """--audio-start: seconds (>= 0) or 'auto'."""
+    if v.strip().lower() == "auto":
+        return "auto"
+    try:
+        return float(v)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected seconds or 'auto', got {v!r}") from None
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="clips", description="Beat-synced 9:16 TikTok edits.")
     p.add_argument("input", help="video file or directory of clips")
@@ -22,7 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fps", type=int, choices=(30, 60), default=30)
     p.add_argument("--beats-per-cut", type=int, metavar="N", help="cut every N beats (disables auto)")
     p.add_argument("--duration", type=float, help="max output length in seconds")
-    p.add_argument("--audio-start", type=float, default=0.0, help="start offset in the song (s)")
+    p.add_argument("--audio-start", type=audio_start_arg, default=0.0, metavar="SECONDS|auto",
+                   help="start offset in the song (s), or 'auto' to pick the drop / most energetic part")
     p.add_argument("--shuffle", action="store_true")
     p.add_argument("--seed", type=int)
     p.add_argument("--fit", choices=("crop", "letterbox", "blur"), default="crop",
@@ -52,7 +63,7 @@ def run(args) -> int:
         raise ClipsError("--beats-per-cut must be >= 1")
     if args.duration is not None and args.duration <= 0:
         raise ClipsError("--duration must be > 0")
-    if args.audio_start < 0:
+    if args.audio_start != "auto" and args.audio_start < 0:
         raise ClipsError("--audio-start must be >= 0")
     if not Path(args.audio).is_file():
         raise ClipsError(f"audio file not found: {args.audio}")
@@ -86,9 +97,16 @@ def run(args) -> int:
     t_intro = sum(ifr) / fps
     if args.duration is not None and t_intro >= args.duration - 1e-9:
         raise ClipsError(f"intro ({t_intro:.2f}s) is not shorter than --duration ({args.duration}s)")
-    music_len = audio_mod.output_length(alen, args.audio_start,
+    section_cands = []
+    if args.audio_start == "auto":
+        window = audio_mod.AUTO_WINDOW if args.duration is None else args.duration - t_intro
+        audio_start, section_cands = audio_mod.auto_audio_start(args.audio, window)
+        print(f"note: --audio-start auto picked {audio_start:.2f}s", file=sys.stderr)
+    else:
+        audio_start = args.audio_start
+    music_len = audio_mod.output_length(alen, audio_start,
                                         None if args.duration is None else args.duration - t_intro)
-    an = audio_mod.analyze(args.audio, args.audio_start, music_len)
+    an = audio_mod.analyze(args.audio, audio_start, music_len)
     plan = audio_mod.plan_from_analysis(an, fps, args.beats_per_cut, args.punch, args.flash)
     # music section starts after any footage the intro already used from each clip
     start_at = [max([r.end for r in regions if r.source == s.path], default=0.0) for s in sources]
@@ -114,6 +132,9 @@ def run(args) -> int:
                  for s, a in zip(plan.shots, assigns)]
         print(json.dumps({"intro": [r.to_dict() for r in regions],
                           "candidates": [r.to_dict() for r in candidates],
+                          "audio_start": round(audio_start, 4),
+                          "audio_start_candidates": [{"start": t, "score": sc}
+                                                     for t, sc in section_cands],
                           "music_in": args.music_in, "rise": args.rise,
                           "t_intro": round(t_intro, 4), "shots": shots}, indent=2))
         return 0
@@ -125,7 +146,7 @@ def run(args) -> int:
     if regions:
         ia = IntroAudio([(r.source, r.start, n / fps) for r, n in zip(regions, ifr)],
                         args.music_in, args.rise)
-    render(plan, all_sources, assigns, Path(args.audio), args.audio_start, args.subs,
+    render(plan, all_sources, assigns, Path(args.audio), audio_start, args.subs,
            Path(args.output), fit=args.fit, sub_style=args.sub_style,
            word_reveal=args.word_reveal, intro=ia)
     print(f"wrote {args.output}", file=sys.stderr)
