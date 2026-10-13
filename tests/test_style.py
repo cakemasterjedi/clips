@@ -127,7 +127,7 @@ def test_links_are_downloaded(tmp_path, monkeypatch):
     vid = tmp_path / "local.mp4"
     vid.write_bytes(b"x")
 
-    def fake(url, cache):
+    def fake(url, cache, cookies=None):
         got.append((url, cache))
         return vid
 
