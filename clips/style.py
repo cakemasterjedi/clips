@@ -52,36 +52,71 @@ def is_url(s: str) -> bool:
     return bool(URL_RE.match(s))
 
 
-def download(url: str, cache: Path) -> Path:
-    """Download one reference video with yt-dlp into `cache` (reused if already there)."""
+BLOCKED_HINT = ("the site refused the download. Run the updater (newer yt-dlp), make sure "
+                "curl_cffi is installed (it lets yt-dlp look like a browser), or pass "
+                "--cookies-from-browser firefox|chrome to use your browser's login")
+
+
+def impersonate_target():
+    """yt-dlp's Chrome impersonation target when curl_cffi is installed, else None."""
+    try:
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+        import curl_cffi  # noqa: F401
+        return ImpersonateTarget.from_str("chrome")
+    except Exception:
+        return None
+
+
+def download(url: str, cache: Path, cookies: Optional[str] = None) -> Path:
+    """Download one reference video with yt-dlp into `cache` (reused if already there).
+    A failed attempt is retried once impersonating Chrome (TikTok answers plain requests with
+    "Unexpected response from webpage request"); `cookies` = a browser to borrow cookies from."""
     try:
         import yt_dlp
     except ImportError:
         raise ClipsError("downloading links needs yt-dlp: .venv/bin/python -m pip install yt-dlp") from None
     cache.mkdir(parents=True, exist_ok=True)
-    opts = {"outtmpl": str(cache / "%(extractor)s-%(id)s.%(ext)s"),
+    base = {"outtmpl": str(cache / "%(extractor)s-%(id)s.%(ext)s"),
             "format": "bv*[height<=1920]+ba/b[height<=1920]/b",
             "merge_output_format": "mp4", "ffmpeg_location": ffmpeg_exe(),
             "noplaylist": True, "quiet": True, "no_warnings": True}
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")
-            if not path.exists():
-                path = Path(ydl.prepare_filename(info))
-    except Exception as exc:   # yt-dlp raises many types; surface one line
-        raise ClipsError(f"cannot download {url}: {str(exc).splitlines()[0]}") from None
+    if cookies:
+        base["cookiesfrombrowser"] = (cookies,)
+    attempts = [base]
+    imp = impersonate_target()
+    if imp is not None:
+        attempts.append(dict(base, impersonate=imp))
+    print(f"downloading {url} (yt-dlp {yt_dlp.version.__version__}"
+          f"{', browser impersonation available' if imp else ', no curl_cffi'})...", file=sys.stderr)
+    err = ""
+    for k, opts in enumerate(attempts):
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")
+                if not path.exists():
+                    path = Path(ydl.prepare_filename(info))
+            break
+        except Exception as exc:   # yt-dlp raises many types; surface one line
+            err = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+            if k + 1 < len(attempts):
+                print(f"download failed ({err}); retrying as Chrome", file=sys.stderr)
+    else:
+        hint = f"; {BLOCKED_HINT}" if re.search(r"Unexpected response|403|blocked|Unable to extract"
+                                                 r"|login|cookies", err, re.I) else ""
+        raise ClipsError(f"cannot download {url}: {err}{hint}") from None
     if not path.exists():
         raise ClipsError(f"download of {url} produced no file")
     return path
 
 
-def resolve_refs(items: Sequence[str], cache: Path = DEFAULT_CACHE) -> List[Path]:
+def resolve_refs(items: Sequence[str], cache: Path = DEFAULT_CACHE,
+                 cookies: Optional[str] = None) -> List[Path]:
     """Links are downloaded; local files are used in place; folders contribute their videos."""
     out: List[Path] = []
     for it in items:
         if is_url(it):
-            out.append(download(it, cache))
+            out.append(download(it, cache, cookies))
             continue
         p = Path(it)
         if p.is_dir():
@@ -537,17 +572,18 @@ def merge_framing(items: Sequence[dict]) -> dict:
     return out
 
 
-def learn(items: Sequence[str], name: str, cache: Path = DEFAULT_CACHE) -> dict:
+def learn(items: Sequence[str], name: str, cache: Path = DEFAULT_CACHE,
+          cookies: Optional[str] = None) -> dict:
     stats = []
-    for item, path in zip_refs(items, cache):
+    for item, path in zip_refs(items, cache, cookies):
         print(f"analysing {path.name}...", file=sys.stderr)
         stats.append(analyze_reference(path, item if is_url(item) else path.name))
     return build_profile(stats, name)
 
 
-def zip_refs(items: Sequence[str], cache: Path):
+def zip_refs(items: Sequence[str], cache: Path, cookies: Optional[str] = None):
     for it in items:
-        for p in resolve_refs([it], cache):
+        for p in resolve_refs([it], cache, cookies):
             yield it, p
 
 

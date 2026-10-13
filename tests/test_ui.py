@@ -352,3 +352,40 @@ def test_lan_host(tmp_path, monkeypatch):
         assert req(srv, "GET", "/api/state")[0] == 200
     finally:
         srv.shutdown()
+
+
+def test_learn_cookies_and_eta(tmp_path):
+    argv = ui.learn_argv({"links": "https://a/1 https://a/2", "name": "x", "cookies": "firefox"},
+                         tmp_path)
+    assert argv[:5] == ["learn", "https://a/1", "https://a/2", "--cookies-from-browser", "firefox"]
+    with pytest.raises(ClipsError):
+        ui.learn_argv({"links": "https://a/1", "name": "x", "cookies": "fire fox; rm"}, tmp_path)
+    j = ui.Job("render", [], "t")
+    j.status, j.started = "running", 100.0
+    assert j.eta(110.0) is None
+    j.p0, j.progress = (100.0, 0.1), 0.5                    # 0.4 done in 20 s -> 0.5 left = 25 s
+    assert j.eta(120.0) == pytest.approx(25.0)
+
+
+def test_update_job(tmp_path, monkeypatch):
+    script = tmp_path / "update.sh"
+    script.write_text("echo 'updated abc -> def:'\necho '  - something new'\n")
+    monkeypatch.setattr(ui, "UPDATER", script)
+    srv = ui.serve(tmp_path / "work", 0, False)
+    called = []
+    srv.jobs.on_updated = lambda: called.append(1)
+    try:
+        state = json.loads(req(srv, "GET", "/api/state")[1])
+        assert state["can_update"] and state["ncpu"] >= 1 and state["boot"]
+        st, body, _ = req(srv, "POST", "/api/update", {})
+        assert st == 200
+        j = wait_job(srv, json.loads(body)["id"])
+        assert j.status == "done" and called == [1]
+        assert json.loads(req(srv, "GET", "/api/state")[1])["jobs"][0]["command"].startswith("bash ")
+        script.write_text("echo 'already up to date'\n")
+        j = wait_job(srv, json.loads(req(srv, "POST", "/api/update", {})[1])["id"])
+        assert j.status == "done" and called == [1]          # nothing new: no restart
+        monkeypatch.setattr(ui, "UPDATER", tmp_path / "missing.sh")
+        assert req(srv, "POST", "/api/update", {})[0] == 400
+    finally:
+        srv.shutdown()

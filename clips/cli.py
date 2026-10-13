@@ -486,6 +486,9 @@ def build_learn_parser() -> argparse.ArgumentParser:
     p.add_argument("refs", nargs="+", help="links (downloaded with yt-dlp), video files or folders")
     p.add_argument("-o", "--output", required=True, help="profile to write (.json)")
     p.add_argument("--name", help="creator name stored in the profile (default: output file name)")
+    p.add_argument("--cookies-from-browser", metavar="BROWSER",
+                   help="use this browser's cookies for links (firefox, chrome, chromium, brave, "
+                        "edge...): helps when a site wants a login or blocks plain downloads")
     p.add_argument("--cache", default=str(style_mod.DEFAULT_CACHE),
                    help=f"download folder for links (default {style_mod.DEFAULT_CACHE})")
     return p
@@ -553,7 +556,8 @@ def build_autoframe_parser() -> argparse.ArgumentParser:
 
 
 def run_learn(args) -> int:
-    prof = style_mod.learn(args.refs, args.name or Path(args.output).stem, Path(args.cache))
+    prof = style_mod.learn(args.refs, args.name or Path(args.output).stem, Path(args.cache),
+                           args.cookies_from_browser)
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(prof, indent=2) + "\n", encoding="utf-8")

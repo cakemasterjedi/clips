@@ -43,7 +43,10 @@ The file pickers can make folders and upload files from the device you are brows
 (phone footage straight into a folder on the PC). Captions are off unless you pick a file.
 Each job shows its current step, how long it has run, how long since its last output and the
 CPU it is using, so a long quiet step is not mistaken for a freeze; tick "advanced log" to see
-every FFmpeg step, and "full log file" opens the whole log (also kept in `~/Videos/clips/logs`). Keep the terminal open while you use
+every FFmpeg step, and "full log file" opens the whole log (also kept in `~/Videos/clips/logs`).
+Jobs show a rough time left once progress starts moving, and CPU as a share of the whole PC.
+**Update clips** (top right) runs `./update.sh` after any queued renders, then restarts the
+page's server on the same address with the new version; the page reloads by itself. Keep the terminal open while you use
 the page. It only answers on this PC; to open it from a phone or another computer on your
 network run `clips ui --host 0.0.0.0` and open the full link it prints (it carries a random
 key; anyone with that link can use clips on your PC). If it does not load, open the port in

@@ -47,6 +47,8 @@ from .ffmpeg import ClipsError
 from .frame import send_file
 
 PAGE = Path(__file__).with_name("ui.html")
+REPO = Path(__file__).resolve().parents[1]
+UPDATER = REPO / "update.sh"
 DEFAULT_WORKDIR = Path.home() / "Videos" / "clips"
 MAX_BODY = 1 << 20
 LOG_LINES = 5000
@@ -167,7 +169,11 @@ def learn_argv(form: dict, profiles: Path) -> List[str]:
     name = safe_name(form.get("name"), "")
     if not name:
         raise ClipsError("give the style a name")
-    argv = ["learn", *refs, "-o", str(profiles / f"{name}.json"), "--name", name]
+    browser = str(form.get("cookies") or "").strip()
+    if browser and not re.fullmatch(r"[a-z]+", browser):
+        raise ClipsError("pick a browser name such as firefox or chrome")
+    argv = ["learn", *refs, *(["--cookies-from-browser", browser] if browser else []),
+            "-o", str(profiles / f"{name}.json"), "--name", name]
     parse_ok(build_learn_parser(), argv[1:])
     return argv
 
@@ -264,13 +270,26 @@ class Job:
         self.stage = "waiting for the job before it" if kind != "frame" else "starting"
         self.cancelled = False
         self.logfile: Optional[Path] = None
+        self.raw: Optional[List[str]] = None             # a command other than `clips ...`
+        self.p0: Optional[tuple] = None                  # (time, progress) when progress first moved
+
+    def eta(self, now: float) -> Optional[float]:
+        """Rough seconds left, from the pace since progress first moved."""
+        if self.status != "running" or self.p0 is None:
+            return None
+        t0, p0 = self.p0
+        done = self.progress - p0
+        if done < 0.05 or now - t0 < 3:
+            return None
+        return max(0.0, (now - t0) * (1 - self.progress) / done)
 
     def to_dict(self) -> dict:
         now = time.time()
         running = self.status == "running" and self.proc is not None
         return {"id": self.id, "kind": self.kind, "title": self.title, "status": self.status,
                 "progress": round(self.progress, 3), "url": self.url, "stage": self.stage,
-                "command": "clips " + shlex.join(self.argv),
+                "command": shlex.join(self.raw) if self.raw else "clips " + shlex.join(self.argv),
+                "eta": None if self.eta(now) is None else round(self.eta(now)),
                 "log": [list(x) for x in list(self.log)[-LOG_SEND:]], "seq": self.seq,
                 "elapsed": round(((self.ended or now) - self.started), 1) if self.started else 0,
                 "idle": round(now - (self.last_line or self.started or now), 1) if running else None,
@@ -285,6 +304,7 @@ class Jobs:
 
     def __init__(self, workdir: Path, cmd: Optional[List[str]] = None):
         self.workdir = workdir
+        self.on_updated = None                           # called after an update that changed code
         self.cmd = cmd or [sys.executable, "-m", "clips"]
         self.items: List[Job] = []
         self.lock = threading.Lock()
@@ -336,9 +356,9 @@ class Jobs:
         job.logfile = logs / f"{time.strftime('%Y%m%d-%H%M%S')}-{job.id}-{safe_name(job.title, job.kind)}.log"
         env = dict(os.environ, PYTHONUNBUFFERED="1", TMPDIR=str(tmp), CLIPS_VERBOSE="1")
         job.status, job.started, job.stage = "running", time.time(), "starting"
-        self._line(job, "$ clips " + shlex.join(job.argv))
+        self._line(job, "$ " + (shlex.join(job.raw) if job.raw else "clips " + shlex.join(job.argv)))
         try:
-            job.proc = subprocess.Popen(self.cmd + job.argv, stdout=subprocess.PIPE,
+            job.proc = subprocess.Popen(job.raw or self.cmd + job.argv, stdout=subprocess.PIPE,
                                         stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                         env=env, start_new_session=True)
         except OSError as exc:
@@ -365,6 +385,9 @@ class Jobs:
         self._line(job, f"-- {status} (exit {code}) after {ended - job.started:.1f}s")
         if status == "done":
             job.progress = 1.0
+        if job.kind == "update" and status == "done" and self.on_updated and \
+                any(x[2].startswith("updated ") for x in job.log):
+            self.on_updated()
         job.stage, job.ended, job.status = status, ended, status      # status last: readers poll it
 
     def _line(self, job: Job, line: str):
@@ -384,9 +407,15 @@ class Jobs:
         st = stage_of(line)
         if st:
             job.stage = st
+        before = job.progress
         if job.kind == "render":
             job.var_k, job.var_f = progress_of(line, job.var_k, job.variations, job.var_f)
             job.progress = min(0.99, (job.var_k + job.var_f) / max(1, job.variations))
+        elif job.kind == "learn" and line.startswith("analysing "):
+            job.var_k += 1                                 # one reference analysed per line
+            job.progress = min(0.99, (job.var_k - 0.5) / max(1, job.variations))
+        if job.p0 is None and job.progress > before:
+            job.p0 = (now, job.progress)
         m = re.search(r" at (http://127\.0\.0\.1:\d+/)", line)
         if job.kind == "frame" and m:
             job.url = m.group(1)
@@ -439,14 +468,35 @@ class UIServer(ThreadingHTTPServer):
         self.renders.mkdir(parents=True, exist_ok=True)
         self.profiles.mkdir(parents=True, exist_ok=True)
         self.jobs = Jobs(self.workdir, cmd)
+        self.jobs.on_updated = self.restart_soon
+        self.boot = time.time()
+        self.version = code_version()
         self.local_only = is_loopback(host)
-        # on the network the page needs a key from the printed link (kept in a cookie after)
-        self.key = None if self.local_only else secrets.token_urlsafe(12)
+        # on the network the page needs a key from the printed link (kept in a cookie after);
+        # a restart after an update keeps it so open pages and phones stay signed in
+        self.key = None if self.local_only else (os.environ.get("CLIPS_UI_KEY")
+                                                 or secrets.token_urlsafe(12))
         super().__init__((host, port), Handler)
 
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.server_address[1]}/"
+
+    def restart_soon(self, delay: float = 2.0):
+        """After an update: replace this process with a fresh `clips ui` on the same port
+        (renders are queued behind the update, so none is running)."""
+        def go():
+            time.sleep(delay)                            # let the page see the update finish
+            for j in list(self.jobs.items):
+                if j.status in ("running", "queued"):
+                    self.jobs.cancel(j)
+            env = dict(os.environ, CLIPS_UI_NO_BROWSER="1", CLIPS_UI_PORT=str(self.server_address[1]))
+            if self.key:
+                env["CLIPS_UI_KEY"] = self.key
+            print("updated: restarting clips ui...", file=sys.stderr, flush=True)
+            self.socket.close()
+            os.execve(sys.executable, [sys.executable, "-m", "clips", *sys.argv[1:]], env)
+        threading.Thread(target=go, daemon=True).start()
 
     def lan_urls(self) -> List[str]:
         """Addresses other devices can use (only when not bound to loopback)."""
@@ -462,6 +512,16 @@ class UIServer(ThreadingHTTPServer):
             except OSError:
                 ips = [socket.gethostname()]
         return [f"http://{ip}:{self.server_address[1]}/?key={self.key}" for ip in ips]
+
+
+def code_version() -> str:
+    """Short commit and date of the running code (empty outside a git checkout)."""
+    try:
+        r = subprocess.run(["git", "-C", str(REPO), "log", "-1", "--format=%h %cs"],
+                           capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def is_loopback(host: str) -> bool:
@@ -525,7 +585,10 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/":
             return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
         if u.path == "/api/state":
-            return self._json(200, {"workdir": str(srv.workdir), "renders": renders_list(srv.renders),
+            return self._json(200, {"workdir": str(srv.workdir), "boot": srv.boot,
+                                    "version": srv.version, "ncpu": os.cpu_count() or 1,
+                                    "can_update": UPDATER.is_file(),
+                                    "renders": renders_list(srv.renders),
                                     "profiles": profiles_list(srv.profiles),
                                     "jobs": srv.jobs.snapshot()})
         if u.path == "/api/ls":
@@ -577,7 +640,16 @@ class Handler(BaseHTTPRequestHandler):
                 job = srv.jobs.add(Job("render", argv, out.name, out, var))
             elif path == "/api/learn":
                 argv = learn_argv(form, srv.profiles)
-                job = srv.jobs.add(Job("learn", argv, f"learn {Path(argv[-3]).stem}"))
+                nrefs = next(i for i, a in enumerate(argv[1:]) if a.startswith("-"))
+                job = srv.jobs.add(Job("learn", argv, f"learn {Path(argv[-3]).stem}",
+                                       variations=nrefs))
+            elif path == "/api/update":
+                if not UPDATER.is_file():
+                    raise ClipsError("this install has no update.sh (it is not a git checkout); "
+                                     "update it the way you installed it")
+                job = Job("update", [], "update clips")
+                job.raw = ["bash", str(UPDATER)]
+                job = srv.jobs.add(job)
             elif path == "/api/frame":
                 argv = frame_argv(form)
                 job = srv.jobs.add(Job("frame", argv, f"frame {Path(argv[1]).name}"))
@@ -656,10 +728,16 @@ def make_folder(parent: str, name: str) -> dict:
 
 
 def serve(workdir: Path = DEFAULT_WORKDIR, port: int = 8361, browser: bool = True,
-          cmd: Optional[List[str]] = None, host: str = "127.0.0.1") -> UIServer:
-    try:
-        srv = UIServer(workdir, port, cmd, host)
-    except OSError:
+          cmd: Optional[List[str]] = None, host: str = "127.0.0.1",
+          tries: int = 1) -> UIServer:
+    for k in range(tries):
+        try:
+            srv = UIServer(workdir, port, cmd, host)
+            break
+        except OSError:
+            if k + 1 < tries:
+                time.sleep(0.5)                          # restarting: the old socket is closing
+    else:
         srv = UIServer(workdir, 0, cmd, host)           # port taken
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     if browser:
@@ -668,7 +746,11 @@ def serve(workdir: Path = DEFAULT_WORKDIR, port: int = 8361, browser: bool = Tru
 
 
 def run_ui(args) -> int:
-    srv = serve(Path(args.workdir), args.port, not args.no_browser, host=args.host)
+    restarted = os.environ.pop("CLIPS_UI_NO_BROWSER", None) is not None
+    port = int(os.environ.pop("CLIPS_UI_PORT", "") or args.port)
+    srv = serve(Path(args.workdir), port, not (args.no_browser or restarted), host=args.host,
+                tries=20 if restarted else 1)
+    os.environ.pop("CLIPS_UI_KEY", None)
     print(f"clips ui running at {srv.url}  (renders in {srv.renders})", file=sys.stderr)
     for u in srv.lan_urls():
         print(f"  from other devices: {u}\n  (anyone with this link can use clips on this PC; if it does "

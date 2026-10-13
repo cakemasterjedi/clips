@@ -3,4 +3,4 @@ numpy
 soundfile
 imageio-ffmpeg
 pytest
-yt-dlp
+yt-dlp[default,curl-cffi]>=2026.8.19
