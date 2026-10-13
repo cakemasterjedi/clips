@@ -45,6 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--variations", type=int, default=1, metavar="N",
                    help="render N versions (_v1.._vN): v1 as asked, others reshuffle footage "
                         "and, with --audio-start auto, use the next best song sections")
+    p.add_argument("--no-loudnorm", action="store_true",
+                   help="skip the two-pass loudness normalization to -14 LUFS")
     p.add_argument("--smart-pick", action="store_true",
                    help="give the busiest, sharpest footage to the opening shot and strongest hits")
     p.add_argument("--seed", type=int)
@@ -263,7 +265,7 @@ def run(args) -> int:
     render(plan, all_sources, assigns, Path(args.audio), audio_start, args.subs,
            Path(args.output), fit=args.fit, sub_style=args.sub_style,
            word_reveal=args.word_reveal, intro=ia,
-           loop=args.loop, preview=args.preview,
+           loop=args.loop, preview=args.preview, loudnorm=not args.no_loudnorm,
            **({"punch_zoom": knobs["punch_zoom"]} if knobs["punch_zoom"] else {}))
     print(f"wrote {args.output}", file=sys.stderr)
     return 0

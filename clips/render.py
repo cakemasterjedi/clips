@@ -136,6 +136,63 @@ def final_args(listfile: Path, audio: Path, audio_start: float, length: float, f
             "-t", f"{length:.6f}", str(out)]
 
 
+# ---------------------------------------------------------------- loudness
+LUFS = -14.0              # TikTok / Reels playback target
+TRUE_PEAK = -1.5
+LRA = 11.0
+
+
+def _loudnorm(extra: str = "") -> str:
+    return f"loudnorm=I={LUFS}:TP={TRUE_PEAK}:LRA={LRA}{extra}"
+
+
+def measure_loudness(path: Path) -> Optional[dict]:
+    """First loudnorm pass on a finished file; None if silent or unmeasurable."""
+    import json
+    import re
+    import subprocess
+
+    from .ffmpeg import ffmpeg_exe
+
+    proc = subprocess.run([ffmpeg_exe(), "-nostdin", "-hide_banner", "-i", str(path), "-vn",
+                           "-af", _loudnorm(":print_format=json"), "-f", "null", "-"],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                          errors="replace")
+    m = re.findall(r"\{[^{}]*\}", proc.stderr)
+    if proc.returncode != 0 or not m:
+        return None
+    try:
+        d = json.loads(m[-1])
+        if float(d["input_i"]) < -70:          # silence / -inf
+            return None
+    except (ValueError, KeyError):
+        return None
+    return d
+
+
+def loudnorm_args(src: Path, out: Path, m: dict, duration: float) -> List[str]:
+    """Second pass: one fixed gain to reach LUFS (so dynamics and drops are kept, unlike
+    loudnorm's dynamic mode), with a true-peak limiter catching the few peaks pushed over
+    TRUE_PEAK. Video is copied; audio is cut to the original duration."""
+    gain = LUFS - float(m["input_i"])
+    limit = 10 ** (TRUE_PEAK / 20)
+    return ["-y", "-i", str(src), "-map", "0:v", "-map", "0:a", "-c:v", "copy",
+            "-af", f"volume={gain:.2f}dB,alimiter=limit={limit:.4f}:attack=5:release=50:level=0",
+            "-c:a", "aac", "-b:a", "192k", "-t", f"{duration:.6f}",
+            "-movflags", "+faststart", str(out)]
+
+
+def normalize_loudness(path: Path, duration: float) -> Optional[float]:
+    """Two-pass loudnorm of `path` in place. Returns the measured input LUFS (None = skipped)."""
+    m = measure_loudness(path)
+    if m is None:
+        return None
+    tmp = path.with_name(path.stem + ".loudnorm" + path.suffix)
+    run_ffmpeg(loudnorm_args(path, tmp, m, duration))
+    os.replace(tmp, path)
+    return float(m["input_i"])
+
+
 # ---------------------------------------------------------------- dialogue intro audio
 RISE_GAIN = 0.35          # music level just before the drop in `rise` mode
 INTRO_FADE_IN = 0.03
@@ -214,7 +271,8 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
            audio: Path, audio_start: float, subs: Optional[Path], out: Path,
            workers: Optional[int] = None, fit: str = "crop", sub_style: str = "pop",
            word_reveal: bool = False, intro: Optional[IntroAudio] = None,
-           punch_zoom: float = PUNCH_ZOOM, loop: bool = False, preview: bool = False) -> None:
+           punch_zoom: float = PUNCH_ZOOM, loop: bool = False, preview: bool = False,
+           loudnorm: bool = True) -> None:
     workers = workers or max(1, (os.cpu_count() or 2) // 2)
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -251,3 +309,7 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
         else:
             run_ffmpeg(final_args(lst, Path(audio).resolve(), audio_start, plan.output_len,
                                   plan.fps, ass, out.resolve(), fade, preview))
+    if loudnorm:
+        was = normalize_loudness(out.resolve(), plan.output_len)
+        if was is not None:
+            print(f"loudness {was:.1f} -> {LUFS:.0f} LUFS", file=sys.stderr)

@@ -202,7 +202,8 @@ def test_learns_intro_and_music_entry(footage, tmp_path):
     ref = tmp_path / "ref.mp4"
     assert cli.main([str(d), "--audio", str(song), "--intro", "talk.mp4@0.3-5", "--music-in",
                      "rise", "--rise", "2", "--audio-start", "6", "--duration", "16",
-                     "--fit", "blur", "-o", str(ref)]) == 0
+                     "--fit", "blur", "--no-loudnorm", "-o", str(ref)]) == 0
+    # (no loudnorm: on a click-only test track the peak limiter flattens the 0.5 -> 0.9 lift)
     r = S.analyze_reference(ref)
     assert r.t_intro == pytest.approx(4.7, abs=0.1)
     assert r.music_in == "rise" and 1.0 <= r.rise <= 2.5

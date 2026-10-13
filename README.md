@@ -25,6 +25,8 @@ user-provided subtitles (FFmpeg). Output: 1080x1920, H.264 + AAC, 30 fps (or 60)
 
 Tests: `.venv/bin/python -m pytest -q` (offline).
 
+Audio is loudness-normalized to -14 LUFS (true peak -1.5 dB) in two passes after the final pass (measure with `loudnorm`, then one fixed gain plus a peak limiter, so drops keep their punch) (video stream copied, not re-encoded). Silent output is left alone. `--no-loudnorm` skips it.
+
 ## Look options (all off/default unless given)
 
 - `--fit crop|letterbox|blur`: how non-9:16 footage fills 1080x1920 (default crop; blur = darkened blurred backdrop).
