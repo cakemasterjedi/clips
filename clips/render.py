@@ -22,6 +22,8 @@ PUNCH_ZOOM = 0.12
 PREVIEW_SIZE = (270, 480)   # --preview renders shots at quarter size, upscaled in the final pass
 PREVIEW_X264 = ["-preset", "ultrafast", "-crf", "30"]
 FINAL_X264 = ["-preset", "medium", "-crf", "20"]
+RAMP_DUR = 0.5            # s of output at the end of a lead-in shot played in slow motion
+RAMP_SPEED = 0.4
 LOOP_BLEND = 0.25         # s; the last shot dissolves into the opening frame (--loop)
 LOOP_FADE = 0.02          # s; audio fade at the loop point (just enough to avoid a click)
 PUNCH_DUR = 0.18
@@ -50,17 +52,29 @@ def fit_graph(fit: str, fps: int, inp: str = "0:v", out: str = "f",
 
 def segment_filter(fit: str, fps: int, punch: bool = False, flash: bool = False,
                    punch_zoom: float = PUNCH_ZOOM, blend_at: Optional[float] = None,
-                   size: Tuple[int, int] = (1080, 1920)) -> str:
+                   size: Tuple[int, int] = (1080, 1920),
+                   ramp_len: Optional[float] = None, preview: bool = False) -> str:
     """Complete -filter_complex for one shot, output label [v]. blend_at (loop ending): from
-    that time on, the first frame of input 1 (the opening shot) fades in over the shot."""
+    that time on, the first frame of input 1 (the opening shot) fades in over the shot.
+    ramp_len (shot length in s): the last min(RAMP_DUR, len/2) s play at RAMP_SPEED, frame
+    blended up to fps (plain frame repeats in preview)."""
     W, H = size
     g = fit_graph(fit, fps, size=size)
     last = "f"
+    if ramp_len is not None:
+        r = min(RAMP_DUR, ramp_len / 2)
+        t1 = ramp_len - r
+        smooth = "" if preview else f"minterpolate=fps={fps}:mi_mode=blend,"
+        g += (f";[f]split[ra][rb];[ra]trim=end={t1:.6f},setpts=PTS-STARTPTS[rn];"
+              f"[rb]trim=start={t1:.6f}:end={t1 + r * RAMP_SPEED:.6f},"
+              f"setpts=(PTS-STARTPTS)/{RAMP_SPEED},{smooth}fps={fps}[rs];"
+              f"[rn][rs]concat=n=2:v=1:a=0,fps={fps}[rr]")
+        last = "rr"
     if blend_at is not None:
         g += (";" + fit_graph(fit, fps, "1:v", "l0", size) +
               f";[l0]trim=end_frame=1,loop=loop=-1:size=1,setpts=N/{fps}/TB,format=yuva420p,"
               f"fade=t=in:st={blend_at:.6f}:d={LOOP_BLEND:.6f}:alpha=1[l1];"
-              f"[f][l1]overlay=shortest=1:format=auto[fb]")
+              f"[{last}][l1]overlay=shortest=1:format=auto[fb]")
         last = "fb"
     if punch:
         z = f"(1+{punch_zoom:g}*pow(1-min(t/{PUNCH_DUR},1),2))"   # 1.12 -> 1.0, ease-out
@@ -78,7 +92,8 @@ def segment_filter(fit: str, fps: int, punch: bool = False, flash: bool = False,
 def segment_args(src: Path, a: Assignment, frames: int, fps: int, out: Path,
                  fit: str = "crop", punch: bool = False, flash: bool = False,
                  punch_zoom: float = PUNCH_ZOOM,
-                 blend_to: Optional[Tuple[Path, float]] = None, preview: bool = False) -> List[str]:
+                 blend_to: Optional[Tuple[Path, float]] = None, preview: bool = False,
+                 ramp: bool = False) -> List[str]:
     args = ["-y"]
     if a.loop:
         args += ["-stream_loop", "-1"]
@@ -89,7 +104,8 @@ def segment_args(src: Path, a: Assignment, frames: int, fps: int, out: Path,
         blend_at = max(frames / fps - LOOP_BLEND, 0.0)
     args += ["-frames:v", str(frames), "-an",
              "-filter_complex", segment_filter(fit, fps, punch, flash, punch_zoom, blend_at,
-                                               PREVIEW_SIZE if preview else (1080, 1920)),
+                                               PREVIEW_SIZE if preview else (1080, 1920),
+                                               frames / fps if ramp else None, preview),
              "-map", "[v]",
              "-c:v", "libx264", *(PREVIEW_X264 if preview else ["-preset", "veryfast", "-crf", "18"]),
              "-r", str(fps), str(out)]
@@ -215,7 +231,8 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
                 a0 = assignments[0]
                 blend = (sources[a0.source].path, a0.start)
             run_ffmpeg(segment_args(sources[a.source].path, a, sh.frames, plan.fps, segs[i],
-                                    fit, sh.punch, sh.flash, punch_zoom, blend, preview))
+                                    fit, sh.punch, sh.flash, punch_zoom, blend, preview,
+                                    sh.ramp))
 
         print(f"rendering {len(segs)} shots with {workers} workers...", file=sys.stderr)
         with ThreadPoolExecutor(max_workers=workers) as ex:

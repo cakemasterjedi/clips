@@ -46,6 +46,7 @@ class Shot:
     punch: bool = False
     flash: bool = False
     section: str = "music"
+    ramp: bool = False        # slow-motion tail leading into the next (hit) shot
 
     @property
     def start(self) -> float:
@@ -447,6 +448,23 @@ def finalize_frames(cuts: Sequence[float], length: float, fps: int,
 # ---------------------------------------------------------------- beat-hit effects
 PUNCH_FRAC = 0.35
 FLASH_FRAC = 0.15
+RAMP_FRAC = 0.15          # share of shots whose start is a big enough hit to ramp into
+RAMP_MIN_SHOT = 0.5       # s; lead-in shots shorter than this are not slowed
+
+
+def select_ramps(hits: Sequence[float], energies: Sequence[float], lengths: Sequence[float],
+                 frac: float = RAMP_FRAC) -> List[bool]:
+    """ramp[i] = shot i slows down into shot i+1. The hits ramped into are the top `frac` of
+    shots by hit strength plus the energy rise across the cut (ties: earlier); the lead-in shot
+    must be at least RAMP_MIN_SHOT long. Shot 0 is never ramped into."""
+    n = len(hits)
+    key = {h: hits[h] + max(0.0, energies[h] - energies[h - 1]) for h in range(1, n) if hits[h] > 0}
+    order = sorted(key, key=lambda h: (-key[h], h))
+    out = [False] * n
+    for h in order[:int(round(frac * n))]:
+        if lengths[h - 1] >= RAMP_MIN_SHOT - 1e-9:
+            out[h - 1] = True
+    return out
 
 
 def hit_strengths(shot_starts: Sequence[float], env: Optional[np.ndarray],
@@ -489,7 +507,8 @@ def select_fx(hits: Sequence[float], punch_frac: float = PUNCH_FRAC,
 def plan_from_analysis(an: Analysis, fps: int, beats_per_cut: Optional[int] = None,
                        punch: bool = False, flash: bool = False,
                        max_shot: float = AUTO_MAX_SHOT, onset_cuts: bool = True,
-                       punch_frac: float = PUNCH_FRAC, flash_frac: float = FLASH_FRAC) -> Plan:
+                       punch_frac: float = PUNCH_FRAC, flash_frac: float = FLASH_FRAC,
+                       ramp: bool = False) -> Plan:
     length = an.length
     beats = an.beats[(an.beats >= 0) & (an.beats < length)]
     if beats_per_cut:
@@ -520,6 +539,10 @@ def plan_from_analysis(an: Analysis, fps: int, beats_per_cut: Optional[int] = No
         sh.hit = round(h, 3)
         sh.punch = bool(punch and p)
         sh.flash = bool(flash and f)
+    if ramp:
+        for sh, r in zip(shots, select_ramps([s.hit for s in shots], [s.energy for s in shots],
+                                             [s.length for s in shots])):
+            sh.ramp = r
     return Plan(length, fps, mode, an.tempo, shots)
 
 
@@ -534,6 +557,6 @@ def compose_plan(intro_frames: Sequence[int], music: Plan) -> Plan:
         pos += int(n)
     for sh in music.shots:
         shots.append(Shot(len(shots), pos + sh.start_frame, sh.frames, fps, sh.energy, sh.hit,
-                          sh.punch, sh.flash, "music"))
+                          sh.punch, sh.flash, "music", sh.ramp))
     t_intro = pos / fps
     return Plan(music.output_len + t_intro, fps, music.mode, music.tempo, shots, t_intro)

@@ -33,6 +33,7 @@ Tests: `.venv/bin/python -m pytest -q` (offline).
 - `--preview`: fast draft. Shots are rendered at 270x480 with an ultrafast encode and upscaled to 1080x1920 in the final pass (subtitles are burned at full size), so the output spec is unchanged but it looks soft. Use it to check cuts before the real render.
 - `--punch`: zoom punch (1.12 -> 1.0 in 0.18 s) on the strongest ~35% of beat hits.
 - `--flash`: white flash on the strongest ~15% of beat hits.
+- `--ramp`: speed ramps on the biggest hits (top ~15% by hit strength plus the energy lift across the cut). The shot before the hit plays its last 0.5 s (at most half the shot) at 0.4x speed, frame-blended, and the hit shot snaps back to normal speed. Lead-in shots under 0.5 s are skipped; `--preview` uses plain frame repeats. `--dry-run` reports `ramp` per shot.
 - `.ass` input ignores `--sub-style`/`--word-reveal` (with a warning). `--dry-run` JSON also reports `hit`, `punch`, `flash`.
 
 ## Pacing and dialogue intro

@@ -51,6 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="caption style for .srt input (default pop)")
     p.add_argument("--word-reveal", action="store_true", help="reveal captions word by word (.srt only)")
     p.add_argument("--flash", action="store_true", default=None, help="white flash on the strongest beat hits")
+    p.add_argument("--ramp", action="store_true",
+                   help="slow-motion lead-in that snaps back to speed on the biggest hits")
     p.add_argument("--punch", action="store_true", default=None, help="zoom punch on strong beat hits")
     p.add_argument("--intro", action="append", default=[], metavar="PATH@START-END",
                    help="dialogue intro region (source audio, no music); repeatable")
@@ -171,7 +173,7 @@ def run(args) -> int:
     an = audio_mod.analyze(args.audio, audio_start, music_len)
     plan = audio_mod.plan_from_analysis(an, fps, args.beats_per_cut, args.punch, args.flash,
                                         knobs["max_shot"], knobs["onset_cuts"],
-                                        knobs["punch_frac"], knobs["flash_frac"])
+                                        knobs["punch_frac"], knobs["flash_frac"], args.ramp)
     # music section starts after any footage the intro already used from each clip
     start_at = [max([r.end for r in regions if r.source == s.path], default=0.0) for s in sources]
     if args.smart_pick:
@@ -199,7 +201,7 @@ def run(args) -> int:
                   "end": round(s.end, 4), "frames": s.frames,
                   "source": str(all_sources[a.source].path), "source_start": a.start,
                   "energy": s.energy, "loop": a.loop,
-                  "hit": s.hit, "punch": s.punch, "flash": s.flash}
+                  "hit": s.hit, "punch": s.punch, "flash": s.flash, "ramp": s.ramp}
                  for s, a in zip(plan.shots, assigns)]
         print(json.dumps({"intro": [r.to_dict() for r in regions],
                           "candidates": [r.to_dict() for r in candidates],
