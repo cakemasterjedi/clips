@@ -24,7 +24,9 @@ def test_picks_the_drop(build_drop):
     # any start in [20, 25] keeps the window fully loud; the drop term wins at 20
     assert start == pytest.approx(20.0, abs=0.3)
     assert top[0][0] == pytest.approx(start, abs=1e-3)
-    assert len(top) == 5 and top[0][1] >= top[1][1]
+    assert 3 <= len(top) <= 5 and top[0][1] >= top[1][1]
+    starts = [t for t, _ in top]                     # distinct sections, >= 7.5 s apart
+    assert min(abs(a - b) for a in starts for b in starts if a != b) >= 7.5 - 1e-6
 
 
 def test_window_must_fit(build_drop):
@@ -75,3 +77,28 @@ def test_dry_run_fixed_start_reports_it(build_drop, tmp_path, capsys):
                      "--duration", "5", "--audio-start", "3"]) == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["audio_start"] == 3.0 and plan["audio_start_candidates"] == []
+
+
+def test_chorus_beats_a_loud_unique_intro(tmp_path):
+    """Loud one-off intro (0-10 s), then verse/chorus/verse/chorus. The chorus repeats and is
+    reasonably loud, so it should win over the loudest but unrepeated intro."""
+    sr = SR
+    t = np.arange(int(50 * sr)) / sr
+    y = np.zeros_like(t)
+    beat = 0.5
+    rng = np.random.default_rng(3)
+    intro = t < 10
+    y[intro] = 1.2 * rng.normal(size=intro.sum()) * (np.sin(np.pi * (t[intro] % beat) / beat) ** 4)
+    for a, b, kind in [(10, 20, "v"), (20, 30, "c"), (30, 40, "v"), (40, 50, "c")]:
+        m = (t >= a) & (t < b)
+        if kind == "v":
+            y[m] = 0.15 * np.sin(2 * np.pi * 220 * t[m])
+        else:
+            notes = np.array([262, 330, 392, 494])[((t[m] - a) // beat).astype(int) % 4]
+            y[m] = 0.3 * np.sin(2 * np.pi * notes * t[m])
+    beats = np.arange(0, 50, beat)
+    y += clicks(beats + 0.001, np.full(beats.size, 0.3), 50)
+    p = tmp_path / "song.wav"
+    sf.write(p, y, sr)
+    start, top = A.auto_audio_start(p, 10.0)
+    assert start == pytest.approx(20.0, abs=0.6) or start == pytest.approx(40.0, abs=0.6)

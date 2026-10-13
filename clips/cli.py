@@ -7,8 +7,10 @@ import sys
 from pathlib import Path
 
 from . import audio as audio_mod
+from . import footage as footage_mod
 from . import intro as intro_mod
 from . import sources as src_mod
+from . import style as style_mod
 from .ffmpeg import ClipsError, probe
 from .subs import check_subs_path
 
@@ -32,31 +34,223 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fps", type=int, choices=(30, 60), default=30)
     p.add_argument("--beats-per-cut", type=int, metavar="N", help="cut every N beats (disables auto)")
     p.add_argument("--duration", type=float, help="max output length in seconds")
-    p.add_argument("--audio-start", type=audio_start_arg, default=0.0, metavar="SECONDS|auto",
+    p.add_argument("--audio-start", type=audio_start_arg, default=None, metavar="SECONDS|auto",
                    help="start offset in the song (s), or 'auto' to pick the drop / most energetic part")
     p.add_argument("--shuffle", action="store_true")
+    p.add_argument("--loop", action="store_true",
+                   help="seamless replay: end on the beat that sounds most like the start and "
+                        "dissolve the last shot into the first frame")
+    p.add_argument("--preview", action="store_true",
+                   help="fast draft: shots rendered small and upscaled, quick low-quality encode")
+    p.add_argument("--variations", type=int, default=1, metavar="N",
+                   help="render N versions (_v1.._vN): v1 as asked, others reshuffle footage "
+                        "and, with --audio-start auto, use the next best song sections")
+    p.add_argument("--no-loudnorm", action="store_true",
+                   help="skip the two-pass loudness normalization to -14 LUFS")
+    p.add_argument("--export-edl", metavar="FILE.edl",
+                   help="also write the cut plan as a CMX3600 EDL for Resolve / Premiere")
+    p.add_argument("--360", dest="mode360", choices=("auto", "off", "equirect", "dfisheye"),
+                   default="auto", help="360 footage: auto = .insv as Insta360 dual fisheye, "
+                   "files with 360 metadata as equirectangular (default auto)")
+    p.add_argument("--yaw", type=float, help="360 view direction in degrees (default: follow motion)")
+    p.add_argument("--pitch", type=float, default=0.0, help="360 view pitch in degrees (with --yaw)")
+    p.add_argument("--fov", type=float, default=60.0, help="360 view horizontal field of view (deg)")
+    p.add_argument("--auto-frame", action="store_true",
+                   help="frame 360 clips like the --style creator: write keyframe files "
+                        "(<clip>.view.json, editable with `clips frame`) for clips without one")
+    p.add_argument("--subject", metavar="WHAT",
+                   help="follow a subject found by a local detector instead of the most motion: "
+                        "auto (people first), biggest, or a class such as person, dog, car "
+                        "(needs requirements-vision.txt)")
+    p.add_argument("--subject-desc", metavar="TEXT",
+                   help="which subject, in words (\"the guy in the red jacket\"): a local vision "
+                        "model in Ollama picks the matching one (implies --subject auto)")
+    p.add_argument("--ollama-model", default="qwen2.5vl", metavar="NAME",
+                   help="Ollama vision model for --subject-desc (default qwen2.5vl)")
+    p.add_argument("--detector", choices=("s", "tiny", "nano"), default="s",
+                   help="YOLOX model size for --subject: s (best), tiny, nano (fastest)")
+    p.add_argument("--device", choices=("auto", "cpu", "gpu"), default="auto",
+                   help="where --subject runs: auto = GPU if a GPU build of onnxruntime is installed")
+    p.add_argument("--smart-pick", action="store_true",
+                   help="give the busiest, sharpest footage to the opening shot and strongest hits")
     p.add_argument("--seed", type=int)
-    p.add_argument("--fit", choices=("crop", "letterbox", "blur"), default="crop",
+    p.add_argument("--fit", choices=("crop", "letterbox", "blur", "track"), default=None,
                    help="how to fit non-9:16 footage (default crop)")
     p.add_argument("--sub-style", choices=("pop", "glow", "top"), default="pop",
                    help="caption style for .srt input (default pop)")
     p.add_argument("--word-reveal", action="store_true", help="reveal captions word by word (.srt only)")
-    p.add_argument("--flash", action="store_true", help="white flash on the strongest beat hits")
-    p.add_argument("--punch", action="store_true", help="zoom punch on strong beat hits")
+    p.add_argument("--flash", action="store_true", default=None, help="white flash on the strongest beat hits")
+    p.add_argument("--ramp", action="store_true",
+                   help="slow-motion lead-in that snaps back to speed on the biggest hits")
+    p.add_argument("--punch", action="store_true", default=None, help="zoom punch on strong beat hits")
     p.add_argument("--intro", action="append", default=[], metavar="PATH@START-END",
                    help="dialogue intro region (source audio, no music); repeatable")
     p.add_argument("--no-intro", action="store_true", help="disable the (auto-detected) dialogue intro")
-    p.add_argument("--intro-max", type=float, default=intro_mod.DEFAULT_INTRO_MAX, metavar="SECONDS",
+    p.add_argument("--intro-max", type=float, default=None, metavar="SECONDS",
                    help="cap on the auto-detected intro length (default 8)")
-    p.add_argument("--music-in", choices=("rise", "drop"), default="rise",
+    p.add_argument("--music-in", choices=("rise", "drop"), default=None,
                    help="how the music enters after the intro (default rise)")
-    p.add_argument("--rise", type=float, default=3.0, metavar="SECONDS",
+    p.add_argument("--rise", type=float, default=None, metavar="SECONDS",
                    help="length of the music rise under the dialogue (default 3)")
+    p.add_argument("--style", metavar="PROFILE.json",
+                   help="edit like a learned creator profile (see `clips learn`); flags still win")
     p.add_argument("--dry-run", action="store_true", help="print cut plan as JSON and exit")
     return p
 
 
+DEFAULTS = {"audio_start": 0.0, "fit": "crop", "punch": False, "flash": False,
+            "intro_max": intro_mod.DEFAULT_INTRO_MAX, "music_in": "rise", "rise": 3.0}
+
+
+def apply_style(args) -> dict:
+    """Fill flags the user did not give from --style, then from DEFAULTS. Returns the
+    planning knobs that have no flag of their own."""
+    knobs = {"max_shot": audio_mod.AUTO_MAX_SHOT, "onset_cuts": True,
+             "punch_frac": audio_mod.PUNCH_FRAC, "flash_frac": audio_mod.FLASH_FRAC,
+             "punch_zoom": None, "lead": 0.0}
+    args._framing = None
+    if args.style:
+        prof = style_mod.load_profile(args.style)
+        args._framing = prof.get("framing") or None
+        pace, fx, mus, intro = (prof.get(k, {}) for k in ("pacing", "fx", "music", "intro"))
+        if args.beats_per_cut is None and pace.get("beats_per_cut"):
+            args.beats_per_cut = int(pace["beats_per_cut"])
+        knobs["max_shot"] = float(pace.get("max_shot", knobs["max_shot"]))
+        knobs["onset_cuts"] = bool(pace.get("onset_cuts", True))
+        if args.punch is None:
+            args.punch = fx.get("punch", 0) > 0
+        if args.flash is None:
+            args.flash = fx.get("flash", 0) > 0
+        if fx.get("punch", 0) > 0:
+            knobs["punch_frac"] = float(fx["punch"])
+            knobs["punch_zoom"] = float(fx.get("punch_zoom") or 0) or None
+        if fx.get("flash", 0) > 0:
+            knobs["flash_frac"] = float(fx["flash"])
+        if args.fit is None:
+            args.fit = prof.get("fit")
+        if not args.intro and not args.no_intro and not intro.get("use", True):
+            args.no_intro = True
+        if args.intro_max is None and intro.get("max"):
+            args.intro_max = float(intro["max"])
+        if args.music_in is None:
+            args.music_in = mus.get("music_in")
+        if args.rise is None and mus.get("music_in") == "rise":
+            args.rise = float(mus.get("rise") or DEFAULTS["rise"])
+        if args.audio_start is None:
+            args.audio_start = "auto"
+            knobs["lead"] = float(mus.get("lead_in") or 0.0)
+    for k, v in DEFAULTS.items():
+        if getattr(args, k) is None:
+            setattr(args, k, v)
+    return knobs
+
+
+def build_views(args, plan, sources, assigns):
+    """Per-shot View for 360 sources (reframed) and for --fit track; None when neither applies."""
+    from . import reframe
+
+    base = {}
+    for a in assigns:
+        s = sources[a.source]
+        if a.source not in base:
+            base[a.source] = reframe.detect_view(s.path, s.info or probe(s.path), args.mode360)
+    from . import subject as SJ
+    subj = SJ.options_from(args)
+    if args.fit != "track" and not any(v.is360 for v in base.values()):
+        return None
+    if args.fov <= 0 or args.fov >= 180:
+        raise ClipsError("--fov must be between 0 and 180")
+    from . import autoframe
+    framing = autoframe.framing_of({"framing": getattr(args, "_framing", None)})
+    auto_keys = {}
+    if getattr(args, "auto_frame", False) and args.yaw is None:
+        for i, v in base.items():
+            s = sources[i]
+            if v.is360 and not reframe.sidecar_path(s.path).exists():
+                keys = autoframe.auto_keyframes(s.path, v, s.duration, framing, args.fov, subj)
+                auto_keys[i] = keys
+                if not args.dry_run:
+                    autoframe.write_keyframes(s.path, keys)
+                    print(f"auto-framed {s.path.name}: {len(keys)} keyframes -> "
+                          f"{reframe.sidecar_path(s.path).name}", file=sys.stderr)
+    views = []
+    for sh, a in zip(plan.shots, assigns):
+        s, v = sources[a.source], base[a.source]
+        if v.is360:
+            v = reframe.View(v.kind, v.lenses, v.pair, fov=args.fov)
+            keys = None if args.yaw is not None else (auto_keys.get(a.source)
+                                                      or reframe.load_keyframes(s.path))
+            if args.yaw is not None:
+                v.yaw, v.pitch = args.yaw, args.pitch
+            elif keys:
+                info = s.info or probe(s.path)
+                v.eq = reframe.eq_size(v, info.width or 0, info.height or 0)
+                v = reframe.keyed_view(v, keys, a.start)
+            else:
+                sv = subj and SJ.shot_view(SJ.clip_path(s.path, v, s.duration, subj), v,
+                                           a.start, sh.length)
+                v = (reframe.View(v.kind, v.lenses, v.pair, sv[0], sv[1], v.fov) if sv else
+                     reframe.auto_view(s.path, v, a.start, sh.length))
+        elif args.fit == "track":
+            info = s.info or probe(s.path)
+            st = subj and SJ.shot_track(SJ.clip_path(s.path, v, s.duration, subj,
+                                                     (info.width or 0, info.height or 0)),
+                                        a.start, sh.length)
+            v = (reframe.View(track=st) if st else
+                 reframe.track_view(s.path, a.start, sh.length, info.width or 1080, info.height or 1920))
+            if getattr(args, "_framing", None):
+                v.track, v.place = autoframe.flat_track(v.track, framing)
+        views.append(v)
+    return views
+
+
+def view_dict(v):
+    if v is None:
+        return None
+    if v.is360:
+        d = {"kind": v.kind, "lenses": v.lenses, "yaw": v.yaw, "pitch": v.pitch, "fov": v.fov,
+             "roll": v.roll}
+        if v.keys:
+            d["keyframes"] = len(v.keys)
+        return d
+    return {"kind": "flat", "track": list(v.track) if v.track else None}
+
+
+def variant_args(args, k: int):
+    """Copy of args for variation k (0 = as given): reshuffled footage with a new seed and,
+    when the song start is automatic, the k-th best distinct song section."""
+    v = argparse.Namespace(**vars(args))
+    v.variations, v._variant = 1, k
+    if k:
+        v.shuffle = True
+        v.seed = (args.seed or 0) + k
+    if args.output:
+        o = Path(args.output)
+        v.output = str(o.with_name(f"{o.stem}_v{k + 1}{o.suffix or '.mp4'}"))
+    return v
+
+
+def run_variations(args) -> int:
+    if not 2 <= args.variations <= 10:
+        raise ClipsError("--variations must be between 2 and 10")
+    docs = [] if args.dry_run else None
+    for k in range(args.variations):
+        v = variant_args(args, k)
+        v._collect = docs
+        if not args.dry_run:
+            print(f"variation {k + 1}/{args.variations}: {v.output}", file=sys.stderr)
+        run(v)
+    if docs is not None:
+        print(json.dumps({"variations": docs}, indent=2))
+    return 0
+
+
 def run(args) -> int:
+    if args.variations != 1:
+        return run_variations(args)
+    if (args.subject or args.subject_desc) and args.fit is None:
+        args.fit = "track"            # flat footage can only follow a subject by panning the crop
+    knobs = apply_style(args)
     if not args.output and not args.dry_run:
         raise ClipsError("-o/--output is required unless --dry-run")
     if args.beats_per_cut is not None and args.beats_per_cut < 1:
@@ -100,18 +294,33 @@ def run(args) -> int:
     section_cands = []
     if args.audio_start == "auto":
         window = audio_mod.AUTO_WINDOW if args.duration is None else args.duration - t_intro
-        audio_start, section_cands = audio_mod.auto_audio_start(args.audio, window)
+        audio_start, section_cands = audio_mod.auto_audio_start(args.audio, window, knobs["lead"],
+                                                                getattr(args, "_variant", 0))
         print(f"note: --audio-start auto picked {audio_start:.2f}s", file=sys.stderr)
     else:
         audio_start = args.audio_start
     music_len = audio_mod.output_length(alen, audio_start,
                                         None if args.duration is None else args.duration - t_intro)
+    loop_sim = None
+    if args.loop:
+        music_len, loop_sim = audio_mod.loop_length(args.audio, audio_start, music_len)
+        print(f"note: --loop ends the music at {music_len:.2f}s (match {loop_sim:.2f})",
+              file=sys.stderr)
     an = audio_mod.analyze(args.audio, audio_start, music_len)
-    plan = audio_mod.plan_from_analysis(an, fps, args.beats_per_cut, args.punch, args.flash)
+    plan = audio_mod.plan_from_analysis(an, fps, args.beats_per_cut, args.punch, args.flash,
+                                        knobs["max_shot"], knobs["onset_cuts"],
+                                        knobs["punch_frac"], knobs["flash_frac"], args.ramp)
     # music section starts after any footage the intro already used from each clip
     start_at = [max([r.end for r in regions if r.source == s.path], default=0.0) for s in sources]
-    music_assigns = src_mod.assign([s.length for s in plan.shots], sources, args.shuffle, args.seed,
-                                   start_at)
+    if args.smart_pick:
+        reserved = {i: [(r.start, r.end) for r in regions if r.source == s.path]
+                    for i, s in enumerate(sources)}
+        music_assigns = footage_mod.assign_smart([s.length for s in plan.shots],
+                                                 [s.hit for s in plan.shots], sources,
+                                                 footage_mod.analyse(sources), reserved)
+    else:
+        music_assigns = src_mod.assign([s.length for s in plan.shots], sources, args.shuffle,
+                                       args.seed, start_at)
     all_sources = list(sources)
     intro_assigns = []
     if regions:
@@ -123,20 +332,38 @@ def run(args) -> int:
             intro_assigns.append(src_mod.Assignment(idx, r.start))
         plan = audio_mod.compose_plan(ifr, plan)
     assigns = intro_assigns + music_assigns
+    views = build_views(args, plan, all_sources, assigns)
+    if args.export_edl:
+        from .export import build_edl
+
+        ia_list = [(r.source, r.start, n / fps) for r, n in zip(regions, ifr)] if regions else None
+        edl = Path(args.export_edl)
+        edl.parent.mkdir(parents=True, exist_ok=True)
+        edl.write_text(build_edl(plan, all_sources, assigns, Path(args.audio), audio_start, ia_list,
+                                 Path(args.output).stem if args.output else "clips"),
+                       encoding="utf-8")
+        print(f"wrote {edl}", file=sys.stderr)
     if args.dry_run:
         shots = [{"index": s.index, "section": s.section, "start": round(s.start, 4),
                   "end": round(s.end, 4), "frames": s.frames,
                   "source": str(all_sources[a.source].path), "source_start": a.start,
                   "energy": s.energy, "loop": a.loop,
-                  "hit": s.hit, "punch": s.punch, "flash": s.flash}
-                 for s, a in zip(plan.shots, assigns)]
-        print(json.dumps({"intro": [r.to_dict() for r in regions],
-                          "candidates": [r.to_dict() for r in candidates],
-                          "audio_start": round(audio_start, 4),
-                          "audio_start_candidates": [{"start": t, "score": sc}
-                                                     for t, sc in section_cands],
-                          "music_in": args.music_in, "rise": args.rise,
-                          "t_intro": round(t_intro, 4), "shots": shots}, indent=2))
+                  "hit": s.hit, "punch": s.punch, "flash": s.flash, "ramp": s.ramp,
+                  "view": view_dict(v)}
+                 for s, a, v in zip(plan.shots, assigns, views or [None] * len(assigns))]
+        doc = {"intro": [r.to_dict() for r in regions],
+               "candidates": [r.to_dict() for r in candidates],
+               "audio_start": round(audio_start, 4),
+               "audio_start_lead": knobs["lead"],
+               "style": args.style, "loop_match": loop_sim, "fit": args.fit,
+               "audio_start_candidates": [{"start": t, "score": sc}
+                                          for t, sc in section_cands],
+               "music_in": args.music_in, "rise": args.rise,
+               "t_intro": round(t_intro, 4), "shots": shots}
+        if getattr(args, "_collect", None) is not None:
+            args._collect.append(doc)
+        else:
+            print(json.dumps(doc, indent=2))
         return 0
     from .render import IntroAudio, render
 
@@ -148,15 +375,101 @@ def run(args) -> int:
                         args.music_in, args.rise)
     render(plan, all_sources, assigns, Path(args.audio), audio_start, args.subs,
            Path(args.output), fit=args.fit, sub_style=args.sub_style,
-           word_reveal=args.word_reveal, intro=ia)
+           word_reveal=args.word_reveal, intro=ia,
+           loop=args.loop, preview=args.preview, loudnorm=not args.no_loudnorm, views=views,
+           **({"punch_zoom": knobs["punch_zoom"]} if knobs["punch_zoom"] else {}))
     print(f"wrote {args.output}", file=sys.stderr)
     return 0
 
 
+def build_learn_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="clips learn",
+                                description="Learn a creator's editing style from their videos.")
+    p.add_argument("refs", nargs="+", help="links (downloaded with yt-dlp), video files or folders")
+    p.add_argument("-o", "--output", required=True, help="profile to write (.json)")
+    p.add_argument("--name", help="creator name stored in the profile (default: output file name)")
+    p.add_argument("--cache", default=str(style_mod.DEFAULT_CACHE),
+                   help=f"download folder for links (default {style_mod.DEFAULT_CACHE})")
+    return p
+
+
+def build_frame_parser() -> argparse.ArgumentParser:
+    from . import frame
+    p = argparse.ArgumentParser(
+        prog="clips frame",
+        description="Frame a 360 clip by hand in the browser: drag the view, set keyframes, "
+                    "save them next to the clip (<clip>.view.json) for renders to use.")
+    p.add_argument("clip", help="360 clip (.insv: open the _00_ file of a pair; or equirect MP4)")
+    p.add_argument("--360", dest="mode360", default="auto",
+                   choices=["auto", "equirect", "dfisheye"], help="force the 360 layout")
+    p.add_argument("--port", type=int, default=8360, help="local port (default 8360)")
+    p.add_argument("--no-browser", action="store_true", help="do not open the browser")
+    p.add_argument("--cache", type=Path, default=None,
+                   help="proxy folder (default ~/.cache/clips/proxies)")
+    p.add_argument("--proxy-width", type=int, default=frame.PROXY_W,
+                   help=f"width of the equirect preview video (default {frame.PROXY_W})")
+    return p
+
+
+def build_autoframe_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="clips autoframe",
+        description="Write keyframe files (<clip>.view.json) that frame 360 clips like a "
+                    "learned creator; open them in `clips frame` to adjust.")
+    p.add_argument("input", help="360 clip or folder")
+    p.add_argument("--style", metavar="PROFILE.json", help="creator profile from `clips learn`")
+    p.add_argument("--fov", type=float, default=60.0, help="base horizontal field of view (deg)")
+    p.add_argument("--360", dest="mode360", default="auto",
+                   choices=["auto", "equirect", "dfisheye"], help="force the 360 layout")
+    p.add_argument("--force", action="store_true", help="replace existing keyframe files")
+    p.add_argument("--subject", metavar="WHAT",
+                   help="follow a subject found by a local detector instead of the most motion: "
+                        "auto (people first), biggest, or a class such as person, dog, car "
+                        "(needs requirements-vision.txt)")
+    p.add_argument("--subject-desc", metavar="TEXT",
+                   help="which subject, in words (\"the guy in the red jacket\"): a local vision "
+                        "model in Ollama picks the matching one (implies --subject auto)")
+    p.add_argument("--ollama-model", default="qwen2.5vl", metavar="NAME",
+                   help="Ollama vision model for --subject-desc (default qwen2.5vl)")
+    p.add_argument("--detector", choices=("s", "tiny", "nano"), default="s",
+                   help="YOLOX model size for --subject: s (best), tiny, nano (fastest)")
+    p.add_argument("--device", choices=("auto", "cpu", "gpu"), default="auto",
+                   help="where --subject runs: auto = GPU if a GPU build of onnxruntime is installed")
+    return p
+
+
+def run_learn(args) -> int:
+    prof = style_mod.learn(args.refs, args.name or Path(args.output).stem, Path(args.cache))
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(prof, indent=2) + "\n", encoding="utf-8")
+    pc, fx, mu = prof["pacing"], prof["fx"], prof["music"]
+    print(f"wrote {out}: shots median {pc['median_shot']}s, on beat {pc['on_beat']:.0%}, "
+          f"punch {fx['punch']:.0%}, flash {fx['flash']:.0%}, fit {prof['fit']}, "
+          f"intro {'yes' if prof['intro']['use'] else 'no'}, music {mu['music_in']}",
+          file=sys.stderr)
+    return 0
+
+
 def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    sub = argv[0] if argv and argv[0] in ("learn", "frame", "autoframe") else None
+    if sub == "learn":
+        args = build_learn_parser().parse_args(argv[1:])
+    elif sub == "frame":
+        args = build_frame_parser().parse_args(argv[1:])
+    elif sub == "autoframe":
+        args = build_autoframe_parser().parse_args(argv[1:])
+    else:
+        args = build_parser().parse_args(argv)
     try:
-        return run(args)
+        if sub == "frame":
+            from .frame import run_frame
+            return run_frame(args)
+        if sub == "autoframe":
+            from .autoframe import run_autoframe
+            return run_autoframe(args)
+        return run_learn(args) if sub == "learn" else run(args)
     except ClipsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

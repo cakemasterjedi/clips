@@ -45,6 +45,8 @@ class ProbeInfo:
     width: Optional[int]
     height: Optional[int]
     fps: Optional[float] = None
+    video_streams: int = 0
+    spherical: bool = False     # 360 metadata (e.g. "spherical: equirectangular" side data)
 
 
 _DUR = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
@@ -59,10 +61,13 @@ def parse_probe(stderr: str) -> ProbeInfo:
         duration = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
     has_video = has_audio = False
     width = height = fps = None
+    nvid = 0
     for line in stderr.splitlines():
         s = line.strip()
         if "Stream #" not in s:
             continue
+        if ": Video:" in s and "attached pic" not in s:
+            nvid += 1
         if ": Video:" in s and "attached pic" not in s and not has_video:
             has_video = True
             body = s.split(": Video:", 1)[1]
@@ -74,7 +79,8 @@ def parse_probe(stderr: str) -> ProbeInfo:
                 fps = float(f.group(1))
         elif ": Audio:" in s:
             has_audio = True
-    return ProbeInfo(duration, has_video, has_audio, width, height, fps)
+    return ProbeInfo(duration, has_video, has_audio, width, height, fps, nvid,
+                     "spherical" in stderr.lower())
 
 
 def probe(path) -> ProbeInfo:
