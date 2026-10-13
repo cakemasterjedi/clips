@@ -2,8 +2,34 @@
 
 Local CLI that cuts source video on the beat of a music track (librosa) and burns in
 user-provided subtitles (FFmpeg). Output: 1080x1920, H.264 + AAC, 30 fps (or 60).
+Everything runs on your machine; no paid APIs.
 
-    .venv/bin/python -m clips INPUT --audio SONG [--subs FILE.srt|.ass] -o OUT.mp4 \
+## Install (Linux)
+
+    git clone https://github.com/cakemasterjedi/clips && cd clips
+    ./install.sh              # ffmpeg check, .venv, requirements, `clips` command in ~/.local/bin
+    ./install.sh --vision     # optional: --subject (local object detector, CPU)
+    ./install.sh --ollama     # optional: --subject-desc (Ollama + qwen2.5vl, ~6 GB; sets the RX 6700 XT override)
+    ./install.sh --all        # both optional parts
+
+Needs Python 3.10+. If ffmpeg is missing it tries your package manager (may ask for your
+password) and otherwise falls back to a bundled build. Re-running is safe.
+
+## Quick test
+
+Put a few phone clips in a folder and pick a song (mp3/m4a/wav):
+
+    clips ~/test/footage --audio ~/test/song.mp3 --duration 15 --audio-start auto --dry-run   # cut plan only, no render
+    clips ~/test/footage --audio ~/test/song.mp3 --duration 15 --audio-start auto --preview -o ~/test/draft.mp4
+    clips ~/test/footage --audio ~/test/song.mp3 --duration 15 --audio-start auto \
+        --smart-pick --punch --flash -o ~/test/final.mp4
+
+Add `--subs captions.srt` for burned-in captions and `--variations 3` for three versions.
+Keep footage and renders outside the repo folder.
+
+## Usage
+
+    clips INPUT --audio SONG [--subs FILE.srt|.ass] -o OUT.mp4 \
         [--fps 30|60] [--beats-per-cut N] [--duration S] [--audio-start S|auto] \
         [--shuffle] [--seed N] [--dry-run]
 
@@ -52,12 +78,12 @@ Audio is loudness-normalized to -14 LUFS (true peak -1.5 dB) in two passes after
   - Each intro region is one uncut shot (no punch/flash); `--fit` applies.
   - `--music-in rise|drop` (default rise) and `--rise SECONDS` (default 3): `drop` = music at full volume exactly when the intro ends; `rise` = music fades in from silence to 0.35 under the last `--rise` seconds of the intro, then jumps to full. If `--audio-start` < `--rise` the rise is clamped (note on stderr).
   - `--duration` is the TOTAL length including the intro (error if the intro is not shorter). Cuts are analysed on the song from `--audio-start` for (total - intro).
-- `--dry-run` now prints an object: `{intro, candidates (top 5 detected regions with scores), music_in, rise, t_intro, shots}`; each shot has `section` = `intro` or `music`. Copy a candidate into `--intro`.
+- `--dry-run` prints an object: `{intro, candidates (top 5 detected regions with scores), music_in, rise, t_intro, shots}`; each shot has `section` = `intro` or `music`. Copy a candidate into `--intro`.
 
 ## Learn a creator's style
 
-    .venv/bin/python -m clips learn LINK|VIDEO|FOLDER ... -o style.json [--name NAME] [--cache DIR]
-    .venv/bin/python -m clips INPUT --audio SONG --style style.json -o OUT.mp4
+    clips learn LINK|VIDEO|FOLDER ... -o style.json [--name NAME] [--cache DIR]
+    clips INPUT --audio SONG --style style.json -o OUT.mp4
 
 - `learn` downloads links with `yt-dlp` into `--cache` (default `~/.cache/clips/refs`, outside
   the repo; already downloaded videos are reused) and analyses local files in place. Give it
@@ -100,7 +126,7 @@ With `--style` and `--fit track`, flat footage follows the same profile: the cro
 ### Following a subject (`--subject`, optional local AI)
 
 ```
-pip install -r requirements-vision.txt                    # once (CPU); see below for GPU
+./install.sh --vision                                     # once (CPU); see below for GPU
 clips autoframe CLIPS_FOLDER --subject person              # 360: keyframes follow the person
 clips CLIPS_FOLDER --audio song.mp3 --subject dog -o out.mp4   # 360 view / flat crop follow the dog
 ```
@@ -110,7 +136,7 @@ Instead of the area with the most motion, the framer follows a subject found by 
 **Which one, in words** (`--subject-desc`): when several people are in view, describe the one to follow and a local vision model in [Ollama](https://ollama.com) picks it:
 
 ```
-ollama pull qwen2.5vl                                      # once; ~6 GB, runs on CPU or GPU
+./install.sh --ollama                                      # once; or `ollama pull qwen2.5vl` (~6 GB)
 clips autoframe CLIPS_FOLDER --subject-desc "the guy in the red jacket"
 clips CLIPS_FOLDER --audio song.mp3 --subject dog --subject-desc "the small white dog" -o out.mp4
 ```
@@ -119,8 +145,8 @@ The detector and tracker run as usual; then the up to 6 most prominent candidate
 
 Speed: about one minute of CPU per minute of 360 footage with `--detector s` (5 tiles every 0.5 s), roughly 3x faster with `tiny`; results are cached per clip, so variations and re-renders are instant. `--device auto|cpu|gpu` (default auto uses a GPU when a GPU build of ONNX Runtime is installed):
 
-- Windows, any GPU including AMD Radeon (e.g. RX 6700 XT): `pip uninstall onnxruntime` then `pip install onnxruntime-directml`.
-- Linux with an AMD GPU: install ROCm and MIGraphX, then `pip install onnxruntime-migraphx`. RX 6000 cards that ROCm does not list (6700 XT = gfx1031) need `HSA_OVERRIDE_GFX_VERSION=10.3.0` in the environment.
+- Windows, any GPU including AMD Radeon (e.g. RX 6700 XT): `.venv/bin/pip uninstall onnxruntime` then `.venv/bin/pip install onnxruntime-directml`.
+- Linux with an AMD GPU: install ROCm and MIGraphX, then `.venv/bin/pip install onnxruntime-migraphx`. RX 6000 cards that ROCm does not list (6700 XT = gfx1031) need `HSA_OVERRIDE_GFX_VERSION=10.3.0` in the environment.
 - NVIDIA: `onnxruntime-gpu`. macOS: the standard package already uses CoreML.
 
 ### Framing by hand: `clips frame`

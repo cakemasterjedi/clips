@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clips"
+version = "0.1.0"
+description = "Beat-cut vertical (1080x1920) video edits from local footage and a song"
+requires-python = ">=3.10"
+dynamic = ["dependencies"]
+
+[project.scripts]
+clips = "clips.cli:main"
+
+[tool.setuptools]
+packages = ["clips"]
+
+[tool.setuptools.package-data]
+clips = ["frame_ui.html"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }

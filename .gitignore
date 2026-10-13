@@ -16,3 +16,7 @@ renders/
 
 # Session handoff state
 .handoff/
+
+# Packaging
+*.egg-info/
+build/
