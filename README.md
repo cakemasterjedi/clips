@@ -18,6 +18,7 @@ user-provided subtitles (FFmpeg). Output: 1080x1920, H.264 + AAC, 30 fps (or 60)
   `audio_start_candidates`. With `--music-in rise` the rise plays the build-up before the drop.
 - `--variations N` (2-10): renders `OUT_v1.mp4` .. `OUT_vN.mp4`. v1 is exactly what you asked for; the others reshuffle the footage (seed + k) and, when the song start is automatic, use the next best distinct song sections. With `--dry-run` it prints `{"variations": [plan, ...]}`. Combine with `--preview` for quick comparisons. (With `--smart-pick` the footage choice is deterministic, so only the song section changes.)
 - `--audio-start auto` candidates are distinct sections at least min(window/2, 8 s) apart.
+- `--export-edl FILE.edl`: also write the cut plan as a CMX3600 EDL (one video event per shot, the song and any intro dialogue as audio events, clip names in `* FROM CLIP NAME:` comments) to finish the edit in DaVinci Resolve or Premiere. Works with `--dry-run`. Effects, fit and captions are not carried over.
 - `--dry-run` prints the cut plan as JSON (shots: index, section, start, end, frames, source, source_start, energy, hit, punch, flash; see the intro section below).
 - Subtitles: `.ass` is burned as-is; `.srt` is converted to a styled ASS with a pop-in effect.
   **Subtitle times are relative to the output video and are NOT shifted by `--audio-start`.**

@@ -47,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "and, with --audio-start auto, use the next best song sections")
     p.add_argument("--no-loudnorm", action="store_true",
                    help="skip the two-pass loudness normalization to -14 LUFS")
+    p.add_argument("--export-edl", metavar="FILE.edl",
+                   help="also write the cut plan as a CMX3600 EDL for Resolve / Premiere")
     p.add_argument("--smart-pick", action="store_true",
                    help="give the busiest, sharpest footage to the opening shot and strongest hits")
     p.add_argument("--seed", type=int)
@@ -233,6 +235,16 @@ def run(args) -> int:
             intro_assigns.append(src_mod.Assignment(idx, r.start))
         plan = audio_mod.compose_plan(ifr, plan)
     assigns = intro_assigns + music_assigns
+    if args.export_edl:
+        from .export import build_edl
+
+        ia_list = [(r.source, r.start, n / fps) for r, n in zip(regions, ifr)] if regions else None
+        edl = Path(args.export_edl)
+        edl.parent.mkdir(parents=True, exist_ok=True)
+        edl.write_text(build_edl(plan, all_sources, assigns, Path(args.audio), audio_start, ia_list,
+                                 Path(args.output).stem if args.output else "clips"),
+                       encoding="utf-8")
+        print(f"wrote {edl}", file=sys.stderr)
     if args.dry_run:
         shots = [{"index": s.index, "section": s.section, "start": round(s.start, 4),
                   "end": round(s.end, 4), "frames": s.frames,
