@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from . import audio as audio_mod
+from . import footage as footage_mod
 from . import intro as intro_mod
 from . import sources as src_mod
 from . import style as style_mod
@@ -36,6 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--audio-start", type=audio_start_arg, default=None, metavar="SECONDS|auto",
                    help="start offset in the song (s), or 'auto' to pick the drop / most energetic part")
     p.add_argument("--shuffle", action="store_true")
+    p.add_argument("--smart-pick", action="store_true",
+                   help="give the busiest, sharpest footage to the opening shot and strongest hits")
     p.add_argument("--seed", type=int)
     p.add_argument("--fit", choices=("crop", "letterbox", "blur"), default=None,
                    help="how to fit non-9:16 footage (default crop)")
@@ -161,8 +164,15 @@ def run(args) -> int:
                                         knobs["punch_frac"], knobs["flash_frac"])
     # music section starts after any footage the intro already used from each clip
     start_at = [max([r.end for r in regions if r.source == s.path], default=0.0) for s in sources]
-    music_assigns = src_mod.assign([s.length for s in plan.shots], sources, args.shuffle, args.seed,
-                                   start_at)
+    if args.smart_pick:
+        reserved = {i: [(r.start, r.end) for r in regions if r.source == s.path]
+                    for i, s in enumerate(sources)}
+        music_assigns = footage_mod.assign_smart([s.length for s in plan.shots],
+                                                 [s.hit for s in plan.shots], sources,
+                                                 footage_mod.analyse(sources), reserved)
+    else:
+        music_assigns = src_mod.assign([s.length for s in plan.shots], sources, args.shuffle,
+                                       args.seed, start_at)
     all_sources = list(sources)
     intro_assigns = []
     if regions:

@@ -28,6 +28,7 @@ Tests: `.venv/bin/python -m pytest -q` (offline).
 - `--fit crop|letterbox|blur`: how non-9:16 footage fills 1080x1920 (default crop; blur = darkened blurred backdrop).
 - `--sub-style pop|glow|top` (.srt only): `pop` default; `glow` = centered uppercase serif with an orange glow; `top` = plain white caption above a letterboxed 16:9 frame (use with `--fit letterbox`).
 - `--word-reveal` (.srt only): words appear one by one inside each cue.
+- `--smart-pick`: instead of walking each clip in order, score all footage (motion + sharpness, local DSP) and give the best windows to the opening shot first, then to the strongest beat hits. Black, blank/blurry, frozen footage and windows containing a cut inside the clip are avoided; windows never overlap and neighbouring shots come from different clips when possible.
 - `--punch`: zoom punch (1.12 -> 1.0 in 0.18 s) on the strongest ~35% of beat hits.
 - `--flash`: white flash on the strongest ~15% of beat hits.
 - `.ass` input ignores `--sub-style`/`--word-reveal` (with a warning). `--dry-run` JSON also reports `hit`, `punch`, `flash`.
