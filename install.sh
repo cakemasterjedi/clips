@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# One-command setup for clips on Linux.
+#   ./install.sh                 core: ffmpeg check, .venv, requirements, `clips` command
+#   ./install.sh --vision        + local subject detection (--subject, ONNX Runtime, CPU)
+#   ./install.sh --ollama        + Ollama and the qwen2.5vl model (--subject-desc, ~6 GB)
+#   ./install.sh --all           both
+set -euo pipefail
+
+cd "$(dirname "$0")"
+REPO=$(pwd)
+VISION=0; OLLAMA=0
+for a in "$@"; do
+  case "$a" in
+    --vision) VISION=1 ;;
+    --ollama) OLLAMA=1 ;;
+    --all) VISION=1; OLLAMA=1 ;;
+    -h|--help) sed -n 2,7p "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown option: $a (try --help)" >&2; exit 2 ;;
+  esac
+done
+
+say() { printf '\n==> %s\n' "$*"; }
+SUDO=""; [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null && SUDO=sudo
+
+pkg_install() {  # best effort: apt, dnf, pacman, zypper
+  if command -v apt-get >/dev/null; then $SUDO apt-get update -qq && $SUDO apt-get install -y "$@"
+  elif command -v dnf >/dev/null; then $SUDO dnf install -y "$@"
+  elif command -v pacman >/dev/null; then $SUDO pacman -S --needed --noconfirm "$@"
+  elif command -v zypper >/dev/null; then $SUDO zypper install -y "$@"
+  else return 1; fi
+}
+
+# 1. Python 3.10+
+PY=${PYTHON:-python3}
+command -v "$PY" >/dev/null || { echo "python3 not found; install Python 3.10 or newer" >&2; exit 1; }
+"$PY" -c 'import sys; sys.exit(sys.version_info < (3, 10))' \
+  || { echo "Python 3.10+ needed, found $("$PY" -V)" >&2; exit 1; }
+
+# 2. ffmpeg (optional: a bundled static build is used when there is none)
+say "Checking ffmpeg"
+if command -v ffmpeg >/dev/null; then
+  echo "found $(command -v ffmpeg)"
+else
+  echo "ffmpeg not on PATH, trying the package manager (may ask for your password)"
+  pkg_install ffmpeg || echo "could not install ffmpeg; the bundled imageio-ffmpeg build will be used"
+fi
+
+# 3. venv + requirements + `clips` command
+say "Creating .venv"
+if [ ! -x .venv/bin/python ]; then
+  if ! "$PY" -m venv .venv 2>/dev/null; then
+    rm -rf .venv
+    echo "python venv module missing, installing it"
+    pkg_install python3-venv || true
+    "$PY" -m venv .venv
+  fi
+fi
+say "Installing requirements"
+.venv/bin/python -m pip install -q --upgrade pip
+.venv/bin/python -m pip install -q -r requirements.txt
+.venv/bin/python -m pip install -q --no-deps -e .
+
+if [ "$VISION" = 1 ]; then
+  say "Installing vision extras (CPU ONNX Runtime)"
+  .venv/bin/python -m pip install -q -r requirements-vision.txt
+fi
+
+if [ "$OLLAMA" = 1 ]; then
+  say "Setting up Ollama"
+  if ! command -v ollama >/dev/null; then
+    curl -fsSL https://ollama.com/install.sh | sh   # picks the ROCm build on AMD GPUs
+  fi
+  # RX 6700 XT (gfx1031) is not on ROCm's list; tell Ollama to treat it as gfx1030.
+  if command -v lspci >/dev/null && lspci | grep -Eqi 'VGA.*(Navi 22|6700|6750)'; then
+    if command -v systemctl >/dev/null && systemctl list-unit-files ollama.service >/dev/null 2>&1; then
+      $SUDO mkdir -p /etc/systemd/system/ollama.service.d
+      printf '[Service]\nEnvironment="HSA_OVERRIDE_GFX_VERSION=10.3.0"\n' \
+        | $SUDO tee /etc/systemd/system/ollama.service.d/gfx.conf >/dev/null
+      $SUDO systemctl daemon-reload && $SUDO systemctl restart ollama
+    fi
+  fi
+  ollama pull qwen2.5vl
+fi
+
+# 4. Put `clips` on PATH
+mkdir -p "$HOME/.local/bin"
+ln -sf "$REPO/.venv/bin/clips" "$HOME/.local/bin/clips"
+
+say "Checking the install"
+.venv/bin/clips --help >/dev/null
+.venv/bin/python -c 'from clips.ffmpeg import ffmpeg_exe; print("ffmpeg:", ffmpeg_exe())'
+
+say "Done"
+echo "Run: clips --help"
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *)
+  echo "(~/.local/bin is not on your PATH yet; open a new terminal or use $REPO/.venv/bin/clips)" ;; esac
