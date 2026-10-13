@@ -36,7 +36,7 @@ import sys
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -90,13 +90,18 @@ class Options:
     what: str = "auto"          # auto | biggest | class name(s), comma-separated
     model: str = "s"
     device: str = "auto"        # auto | cpu | gpu
+    desc: Optional[str] = None  # "the guy in the red jacket": pick which one with a local VLM
+    vlm: str = "qwen2.5vl"      # Ollama model for desc
 
 
 def options_from(args) -> Optional[Options]:
     what = getattr(args, "subject", None)
-    if not what:
+    desc = getattr(args, "subject_desc", None)
+    if not what and not desc:
         return None
-    return Options(what, getattr(args, "detector", "s") or "s", getattr(args, "device", "auto") or "auto")
+    return Options(what or "auto", getattr(args, "detector", "s") or "s",
+                   getattr(args, "device", "auto") or "auto", desc or None,
+                   getattr(args, "ollama_model", None) or Options.vlm)
 
 
 def classes_of(what: str) -> Optional[List[int]]:
@@ -520,14 +525,22 @@ def similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.minimum(a, b).sum())
 
 
-def pick_chain(tracks: Sequence[Track], classes: Optional[List[int]], biggest: bool) -> List[Track]:
-    """The subject: most prominent track, extended by look-alike tracks before and after it."""
+def candidates(tracks: Sequence[Track], classes: Optional[List[int]], biggest: bool) -> List[Track]:
+    """Tracks that may be the subject, most prominent first."""
     pool = [t for t in tracks if classes is None or t.cls in classes]
     if classes is None and not biggest and any(t.cls == 0 for t in pool):
         pool = [t for t in pool if t.cls == 0]          # auto: people first
+    return sorted(pool, key=lambda t: -t.prominence(biggest))
+
+
+def pick_chain(tracks: Sequence[Track], classes: Optional[List[int]], biggest: bool,
+               choose: Optional[Callable[[List[Track]], Optional[Track]]] = None) -> List[Track]:
+    """The subject: the chosen (default: most prominent) track, extended by look-alike tracks
+    before and after it."""
+    pool = candidates(tracks, classes, biggest)
     if not pool:
         return []
-    main = max(pool, key=lambda t: t.prominence(biggest))
+    main = (choose(pool) if choose else None) or pool[0]
     ref = main.hist()
     chain = [main]
     while True:          # forward
@@ -552,11 +565,13 @@ def aim(d: Det, wrap: bool) -> Tuple[float, float]:
     return (d.x, d.y + HEAD_UP * d.h) if wrap else (d.x, d.y - HEAD_UP * d.h)
 
 
-def subject_path(frames: Sequence[Sequence[Det]], what: str, wrap: bool,
-                 step: float = STEP) -> List[Optional[Tuple[float, float]]]:
-    """Per analysed frame, where the subject is (None where it is not found)."""
+def subject_path(frames: Sequence[Sequence[Det]], what: str, wrap: bool, step: float = STEP,
+                 choose: Optional[Callable[[List[Track]], Optional[Track]]] = None
+                 ) -> List[Optional[Tuple[float, float]]]:
+    """Per analysed frame, where the subject is (None where it is not found). choose picks the
+    subject among the candidate tracks (most prominent first); None = the first."""
     classes = classes_of(what)
-    chain = pick_chain(track(frames, wrap, step), classes, what.strip().lower() == "biggest")
+    chain = pick_chain(track(frames, wrap, step), classes, what.strip().lower() == "biggest", choose)
     path: List[Optional[Tuple[float, float]]] = [None] * len(frames)
     for t in chain:
         for k, d in t.samples.items():
@@ -589,6 +604,7 @@ def _cache_file(path: Path, view: RF.View, duration: float, model: str) -> Path:
 
 _MEMO: Dict[str, List[List[Det]]] = {}
 _DETECTORS: Dict[Tuple[str, str], Detector] = {}
+_PATHS: Dict[tuple, List[Optional[Tuple[float, float]]]] = {}
 
 
 def clip_detections(path: Path, view: RF.View, duration: float, opts: Options,
@@ -618,8 +634,16 @@ def clip_detections(path: Path, view: RF.View, duration: float, opts: Options,
 
 def clip_path(path: Path, view: RF.View, duration: float, opts: Options,
               src_size: Tuple[int, int] = (0, 0)) -> List[Optional[Tuple[float, float]]]:
-    return subject_path(clip_detections(path, view, duration, opts, src_size), opts.what,
-                        view.is360)
+    memo = (str(_cache_file(path, view, duration, opts.model)), opts.what, opts.desc, opts.vlm)
+    if memo in _PATHS:
+        return _PATHS[memo]
+    frames = clip_detections(path, view, duration, opts, src_size)
+    choose = None
+    if opts.desc:
+        from .describe import chooser
+        choose = chooser(path, view, duration, opts, src_size)
+    _PATHS[memo] = subject_path(frames, opts.what, view.is360, choose=choose)
+    return _PATHS[memo]
 
 
 def targets(path: Sequence[Optional[Tuple[float, float]]], motion: Sequence[Tuple[float, float, float]],

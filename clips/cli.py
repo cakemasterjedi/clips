@@ -62,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="follow a subject found by a local detector instead of the most motion: "
                         "auto (people first), biggest, or a class such as person, dog, car "
                         "(needs requirements-vision.txt)")
+    p.add_argument("--subject-desc", metavar="TEXT",
+                   help="which subject, in words (\"the guy in the red jacket\"): a local vision "
+                        "model in Ollama picks the matching one (implies --subject auto)")
+    p.add_argument("--ollama-model", default="qwen2.5vl", metavar="NAME",
+                   help="Ollama vision model for --subject-desc (default qwen2.5vl)")
     p.add_argument("--detector", choices=("s", "tiny", "nano"), default="s",
                    help="YOLOX model size for --subject: s (best), tiny, nano (fastest)")
     p.add_argument("--device", choices=("auto", "cpu", "gpu"), default="auto",
@@ -243,7 +248,7 @@ def run_variations(args) -> int:
 def run(args) -> int:
     if args.variations != 1:
         return run_variations(args)
-    if args.subject and args.fit is None:
+    if (args.subject or args.subject_desc) and args.fit is None:
         args.fit = "track"            # flat footage can only follow a subject by panning the crop
     knobs = apply_style(args)
     if not args.output and not args.dry_run:
@@ -421,6 +426,11 @@ def build_autoframe_parser() -> argparse.ArgumentParser:
                    help="follow a subject found by a local detector instead of the most motion: "
                         "auto (people first), biggest, or a class such as person, dog, car "
                         "(needs requirements-vision.txt)")
+    p.add_argument("--subject-desc", metavar="TEXT",
+                   help="which subject, in words (\"the guy in the red jacket\"): a local vision "
+                        "model in Ollama picks the matching one (implies --subject auto)")
+    p.add_argument("--ollama-model", default="qwen2.5vl", metavar="NAME",
+                   help="Ollama vision model for --subject-desc (default qwen2.5vl)")
     p.add_argument("--detector", choices=("s", "tiny", "nano"), default="s",
                    help="YOLOX model size for --subject: s (best), tiny, nano (fastest)")
     p.add_argument("--device", choices=("auto", "cpu", "gpu"), default="auto",
