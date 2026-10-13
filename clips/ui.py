@@ -8,9 +8,11 @@ profiles live in a work folder (default ~/Videos/clips: renders/, profiles/), an
 renders can be played or downloaded from the page. `clips frame` runs as its own job and the
 page links to it.
 
-Same rules as `clips frame`: the server listens on 127.0.0.1 only, answers only requests whose
-Host is localhost, and every POST must carry the X-Clips header (a cross-site page cannot send
-it without a CORS preflight, which is never granted). Renders run one at a time.
+Same rules as `clips frame`: by default the server listens on 127.0.0.1 only, answers only
+requests whose Host is localhost, and every POST must carry the X-Clips header (a cross-site
+page cannot send it without a CORS preflight, which is never granted). `--host 0.0.0.0` opens
+it to other devices on the network: then any Host is accepted, and anyone who can reach the
+port can browse folders and start renders. Renders run one at a time.
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -312,17 +315,38 @@ def profiles_list(profiles: Path) -> List[dict]:
 class UIServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, workdir: Path, port: int = 0, cmd: Optional[List[str]] = None):
+    def __init__(self, workdir: Path, port: int = 0, cmd: Optional[List[str]] = None,
+                 host: str = "127.0.0.1"):
         self.workdir = Path(workdir).expanduser().resolve()
         self.renders, self.profiles = self.workdir / "renders", self.workdir / "profiles"
         self.renders.mkdir(parents=True, exist_ok=True)
         self.profiles.mkdir(parents=True, exist_ok=True)
         self.jobs = Jobs(self.workdir, cmd)
-        super().__init__(("127.0.0.1", port), Handler)
+        self.local_only = is_loopback(host)
+        super().__init__((host, port), Handler)
 
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.server_address[1]}/"
+
+    def lan_urls(self) -> List[str]:
+        """Addresses other devices can use (only when not bound to loopback)."""
+        if self.local_only:
+            return []
+        host = self.server_address[0]
+        ips = [host] if host not in ("0.0.0.0", "") else []
+        if not ips:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    s.connect(("10.255.255.255", 1))        # no packet is sent
+                    ips = [s.getsockname()[0]]
+            except OSError:
+                ips = [socket.gethostname()]
+        return [f"http://{ip}:{self.server_address[1]}/" for ip in ips]
+
+
+def is_loopback(host: str) -> bool:
+    return host in ("127.0.0.1", "localhost", "::1") or host.startswith("127.")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -332,6 +356,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _host_ok(self) -> bool:
+        if not self.server.local_only:
+            return True
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
         return host in ("127.0.0.1", "localhost", "[::1]")
 
@@ -416,11 +442,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(workdir: Path = DEFAULT_WORKDIR, port: int = 8361, browser: bool = True,
-          cmd: Optional[List[str]] = None) -> UIServer:
+          cmd: Optional[List[str]] = None, host: str = "127.0.0.1") -> UIServer:
     try:
-        srv = UIServer(workdir, port, cmd)
+        srv = UIServer(workdir, port, cmd, host)
     except OSError:
-        srv = UIServer(workdir, 0, cmd)                 # port taken
+        srv = UIServer(workdir, 0, cmd, host)           # port taken
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     if browser:
         webbrowser.open(srv.url)
@@ -428,8 +454,11 @@ def serve(workdir: Path = DEFAULT_WORKDIR, port: int = 8361, browser: bool = Tru
 
 
 def run_ui(args) -> int:
-    srv = serve(Path(args.workdir), args.port, not args.no_browser)
-    print(f"clips ui at {srv.url}  (renders in {srv.renders}; Ctrl+C to stop)", file=sys.stderr)
+    srv = serve(Path(args.workdir), args.port, not args.no_browser, host=args.host)
+    print(f"clips ui running at {srv.url}  (renders in {srv.renders})", file=sys.stderr)
+    for u in srv.lan_urls():
+        print(f"  from other devices: {u}  (anyone on your network can use it)", file=sys.stderr)
+    print("Keep this terminal open while you use the page; Ctrl+C stops it.", file=sys.stderr)
     try:
         threading.Event().wait()
     except KeyboardInterrupt:
