@@ -1,0 +1,402 @@
+"""Cut planning. Pure planning functions plus a thin librosa analysis layer."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional, Sequence, Tuple
+
+import numpy as np
+
+from .ffmpeg import ClipsError, probe
+
+SR = 22050
+HOP = 512
+MIN_SHOT = 0.25
+MAX_SHOT = 4.0
+AUTO_MAX_SHOT = 3.5      # target shot length at energy 0 (a scene may breathe)
+HOLD_FRAC = 0.12         # top share of cut candidates (by hit strength) that trigger a hold
+HOLD_MAX = 2.5           # post-hit hold cap (s)
+HOLD_MIN_GAP = 8.0       # at most one post-hit hold per this many seconds
+HIGH_ENERGY = 0.7
+TEMPO_GUARD_BPM = 150.0
+BEAT_TOL = 0.03          # seconds of jitter tolerated when comparing to a target
+FALLBACK_GRID = 1.0
+FALLBACK_ONSET_GAP = 0.6
+
+
+@dataclass
+class Analysis:
+    length: float
+    tempo: float
+    beats: np.ndarray
+    strong_onsets: np.ndarray
+    rms: np.ndarray
+    rms_times: np.ndarray
+    onset_env: Optional[np.ndarray] = None    # onset strength envelope
+    onset_env_times: Optional[np.ndarray] = None
+
+
+@dataclass
+class Shot:
+    index: int
+    start_frame: int
+    frames: int
+    fps: int
+    energy: float = 0.0
+    hit: float = 0.0
+    punch: bool = False
+    flash: bool = False
+    section: str = "music"
+
+    @property
+    def start(self) -> float:
+        return self.start_frame / self.fps
+
+    @property
+    def end(self) -> float:
+        return (self.start_frame + self.frames) / self.fps
+
+    @property
+    def length(self) -> float:
+        return self.frames / self.fps
+
+
+@dataclass
+class Plan:
+    output_len: float
+    fps: int
+    mode: str
+    tempo: float
+    shots: List[Shot] = field(default_factory=list)
+    t_intro: float = 0.0
+
+
+# ---------------------------------------------------------------- analysis
+def decode(path, offset: float = 0.0, duration: Optional[float] = None, sr: int = SR) -> np.ndarray:
+    """Decode any ffmpeg-readable audio (mp3, m4a, aac, wav, video files...) to mono float32 at SR."""
+    import subprocess
+
+    from .ffmpeg import ffmpeg_exe
+
+    cmd = [ffmpeg_exe(), "-nostdin", "-hide_banner", "-loglevel", "error",
+           "-ss", f"{offset:.6f}", "-i", str(path)]
+    if duration is not None:
+        cmd += ["-t", f"{duration:.6f}"]
+    cmd += ["-vn", "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode != 0:
+        msg = proc.stderr.decode(errors="replace").strip().splitlines()
+        raise ClipsError(f"cannot decode audio {path}: {msg[-1] if msg else 'ffmpeg failed'}")
+    return np.frombuffer(proc.stdout, dtype=np.float32).copy()
+
+
+def audio_length(path) -> float:
+    info = probe(path)
+    if not info.has_audio:
+        raise ClipsError(f"no audio stream in {path}")
+    if info.duration:
+        return float(info.duration)
+    return decode(path).size / SR
+
+
+def output_length(audio_len: float, audio_start: float, duration: Optional[float]) -> float:
+    avail = audio_len - audio_start
+    if avail <= 0:
+        raise ClipsError(f"--audio-start {audio_start}s is beyond the end of the audio ({audio_len:.2f}s)")
+    return min(avail, duration) if duration is not None else avail
+
+
+def analyze(path, audio_start: float, length: float) -> Analysis:
+    import librosa
+
+    y, sr = decode(path, audio_start, length), SR
+    if y.size == 0:
+        raise ClipsError("audio contains no samples in the requested range")
+    env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP)
+    tempo, beat_frames = librosa.beat.beat_track(onset_envelope=env, sr=sr, hop_length=HOP)
+    tempo = float(np.atleast_1d(tempo)[0])
+    beats = librosa.frames_to_time(beat_frames, sr=sr, hop_length=HOP)
+    onset_frames = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=HOP)
+    if env.size and onset_frames.size:
+        thr = np.percentile(env, 85)
+        onset_frames = onset_frames[env[onset_frames] >= thr]
+    strong = librosa.frames_to_time(onset_frames, sr=sr, hop_length=HOP)
+    rms = librosa.feature.rms(y=y, hop_length=HOP)[0]
+    rms_times = librosa.frames_to_time(np.arange(rms.size), sr=sr, hop_length=HOP)
+    return Analysis(length=length, tempo=tempo, beats=np.asarray(beats, float),
+                    strong_onsets=np.asarray(strong, float), rms=rms, rms_times=rms_times,
+                    onset_env=np.asarray(env, float),
+                    onset_env_times=librosa.frames_to_time(np.arange(env.size), sr=sr, hop_length=HOP))
+
+
+HIT_WINDOW = 0.04
+
+
+# ---------------------------------------------------------------- energy
+def interval_energy(boundaries: Sequence[float], rms: np.ndarray, rms_times: np.ndarray,
+                    length: float, smooth: int = 4) -> np.ndarray:
+    """Normalized [0,1] mean-RMS energy per interval [b[i], b[i+1]) (last runs to `length`)."""
+    b = np.asarray(boundaries, float)
+    if b.size == 0:
+        return np.zeros(0)
+    edges = np.append(b, max(length, b[-1] + 1e-3))
+    raw = np.zeros(b.size)
+    for i in range(b.size):
+        lo = np.searchsorted(rms_times, edges[i], "left")
+        hi = np.searchsorted(rms_times, edges[i + 1], "left")
+        if hi > lo:
+            raw[i] = rms[lo:hi].mean()
+        elif lo < rms.size:
+            raw[i] = rms[min(lo, rms.size - 1)]
+    # reference percentiles come from the whole track (sliding mean at ~one interval), so a
+    # half-quiet/half-loud track still spans the full 0..1 range even if beats are missing
+    # in the quiet part
+    hop_s = float(rms_times[1] - rms_times[0]) if rms_times.size > 1 else 0.023
+    period = float(np.median(np.diff(b))) if b.size > 1 else 0.5
+    win = int(np.clip(round(period / hop_s), 1, max(1, rms.size)))
+    ref = np.convolve(rms, np.ones(win) / win, mode="valid") if rms.size >= win else rms
+    p10, p90 = np.percentile(ref, 10), np.percentile(ref, 90)
+    if p90 - p10 < 1e-9:
+        norm = np.full(b.size, 0.5)
+    else:
+        norm = np.clip((raw - p10) / (p90 - p10), 0.0, 1.0)
+    if smooth > 1 and b.size > 1:
+        pad = np.pad(norm, (smooth // 2, smooth - 1 - smooth // 2), mode="edge")
+        norm = np.convolve(pad, np.ones(smooth) / smooth, mode="valid")
+    return norm
+
+
+def make_energy_fn(boundaries: Sequence[float], energies: np.ndarray) -> Callable[[float], float]:
+    b = np.asarray(boundaries, float)
+    if b.size == 0:
+        return lambda t: 0.0
+
+    def fn(t: float) -> float:
+        i = int(np.clip(np.searchsorted(b, t, "right") - 1, 0, b.size - 1))
+        return float(energies[i])
+
+    return fn
+
+
+# ---------------------------------------------------------------- cut selection
+def make_hit_fn(env: Optional[np.ndarray], env_times: Optional[np.ndarray]) -> Callable[[float], float]:
+    """hit(t) = onset-envelope max within +-40 ms of t, divided by the envelope max (0..1)."""
+    if env is None or env_times is None or len(env) == 0 or float(np.max(env)) <= 0:
+        return lambda t: 0.0
+    peak = float(np.max(env))
+
+    def fn(t: float) -> float:
+        m = np.abs(env_times - t) <= HIT_WINDOW
+        v = float(env[m].max()) if m.any() else float(env[int(np.argmin(np.abs(env_times - t)))])
+        return float(np.clip(v / peak, 0.0, 1.0))
+
+    return fn
+
+
+def auto_cuts(beats: np.ndarray, tempo: float, strong_onsets: np.ndarray,
+              energy_fn: Callable[[float], float], length: float,
+              max_shot: float = AUTO_MAX_SHOT, min_shot: float = MIN_SHOT,
+              hit_fn: Optional[Callable[[float], float]] = None) -> List[float]:
+    """Energy-adaptive cut times (seconds, first is 0.0).
+
+    Target shot length falls from `max_shot` at energy 0 to one beat at energy 1
+    (period + (max_shot - period) * (1 - e)^1.5). After a cut whose hit strength is among the
+    top HOLD_FRAC of all cut candidates, the next shot is held for at least
+    min(4 beats, HOLD_MAX); at most one such hold per HOLD_MIN_GAP seconds.
+    """
+    beats = np.asarray(beats, float)
+    period = float(np.median(np.diff(beats))) if beats.size > 1 else 60.0 / max(tempo, 1.0)
+    fast = max(tempo, 60.0 / period) > TEMPO_GUARD_BPM
+    onset_gap = max(min_shot, 0.5 * period)
+    cands = [(float(t), True) for t in beats]
+    for t in np.asarray(strong_onsets, float):
+        if beats.size == 0 or np.min(np.abs(beats - t)) > 0.06:
+            cands.append((float(t), False))
+    cands.sort()
+    hot = set()
+    if hit_fn is not None and cands:
+        hits = [(hit_fn(t), t) for t, _ in cands]
+        k = max(1, int(round(HOLD_FRAC * len(cands))))
+        hot = {t for h, t in sorted(hits, key=lambda x: (-x[0], x[1]))[:k] if h > 0}
+    hold_len = min(4 * period, HOLD_MAX)
+    cuts = [0.0]
+    last = 0.0
+    holding = False
+    last_hold = -1e9
+    for t, is_beat in cands:
+        if t <= 1e-6 or t >= length - 1e-6:
+            continue
+        d = t - last
+        if is_beat:
+            e = energy_fn(last)
+            target = period + (max_shot - period) * (1.0 - e) ** 1.5
+            target = float(np.clip(target, min_shot, MAX_SHOT))
+            if fast:
+                target = max(target, 2 * period)
+            if holding:
+                target = max(target, hold_len)
+            ok = d >= target - BEAT_TOL
+        else:
+            ok = energy_fn(t) > HIGH_ENERGY and d >= onset_gap and (not holding or d >= hold_len)
+        if ok:
+            cuts.append(t)
+            last = t
+            holding = False
+            if t in hot and t - last_hold >= HOLD_MIN_GAP:
+                holding = True
+                last_hold = t
+    return cuts
+
+
+def every_n_beats(beats: np.ndarray, n: int, length: float) -> List[float]:
+    beats = np.asarray(beats, float)
+    if beats.size < 2:
+        step = n * 0.5   # no usable beats: assume 120 BPM grid
+        return list(np.arange(0.0, length, step))
+    cuts = [0.0] + [float(t) for t in beats[::n] if t > 1e-6 and t < length]
+    return cuts
+
+
+def fallback_cuts(strong_onsets: np.ndarray, length: float) -> Tuple[List[float], str]:
+    on = np.asarray(strong_onsets, float)
+    if on.size >= 4:
+        cuts, last = [0.0], 0.0
+        for t in on:
+            if 1e-6 < t < length and t - last >= FALLBACK_ONSET_GAP:
+                cuts.append(float(t))
+                last = float(t)
+        if len(cuts) >= 4:
+            return cuts, "onsets"
+    return list(np.arange(0.0, length, FALLBACK_GRID)), "grid"
+
+
+# ---------------------------------------------------------------- finalize
+def finalize_frames(cuts: Sequence[float], length: float, fps: int,
+                    min_shot: float = MIN_SHOT, max_shot: float = MAX_SHOT) -> List[Tuple[int, int]]:
+    """Snap to frame grid, merge short shots, split long ones.
+
+    Returns [(start_frame, frames)] summing exactly to round(length*fps). Every shot is
+    within [ceil(min_shot*fps), floor(max_shot*fps)] frames, except when the whole output
+    is shorter than min_shot (then there is a single shorter shot).
+    """
+    total = int(round(length * fps))
+    if total <= 0:
+        raise ClipsError("output length is zero frames")
+    min_f = int(np.ceil(min_shot * fps - 1e-9))
+    max_f = int(np.floor(max_shot * fps + 1e-9))
+    pts = sorted({0} | {int(round(t * fps)) for t in cuts if 0 < round(t * fps) < total})
+    lens = [b - a for a, b in zip(pts, pts[1:] + [total])]
+    # merge short shots into previous neighbour (or next for the first one)
+    i = 0
+    while len(lens) > 1 and i < len(lens):
+        if lens[i] < min_f:
+            if i > 0:
+                lens[i - 1] += lens.pop(i)
+                i -= 1
+            else:
+                first = lens.pop(0)
+                lens[0] += first
+        else:
+            i += 1
+    out: List[int] = []
+    for n in lens:
+        k = max(1, -(-n // max_f))
+        base, rem = divmod(n, k)
+        out.extend(base + (1 if j < rem else 0) for j in range(k))
+    res, pos = [], 0
+    for n in out:
+        res.append((pos, n))
+        pos += n
+    assert pos == total
+    return res
+
+
+# ---------------------------------------------------------------- beat-hit effects
+PUNCH_FRAC = 0.35
+FLASH_FRAC = 0.15
+
+
+def hit_strengths(shot_starts: Sequence[float], env: Optional[np.ndarray],
+                  env_times: Optional[np.ndarray]) -> List[float]:
+    """Onset-envelope max within +-40 ms of each shot start, / envelope max, in [0,1].
+    Normalizing by the max (not a percentile) avoids clipping, so strong hits don't tie.
+    The first shot always gets 0."""
+    n = len(shot_starts)
+    if env is None or env_times is None or len(env) == 0:
+        return [0.0] * n
+    peak = float(np.max(env))
+    if peak <= 0:
+        return [0.0] * n
+    out = []
+    for i, t in enumerate(shot_starts):
+        if i == 0:
+            out.append(0.0)
+            continue
+        m = np.abs(env_times - t) <= HIT_WINDOW
+        v = float(env[m].max()) if m.any() else float(env[int(np.argmin(np.abs(env_times - t)))])
+        out.append(float(np.clip(v / peak, 0.0, 1.0)))
+    return out
+
+
+def select_fx(hits: Sequence[float], punch_frac: float = PUNCH_FRAC,
+              flash_frac: float = FLASH_FRAC) -> Tuple[List[bool], List[bool]]:
+    """Pick the top `punch_frac` / `flash_frac` of shots by hit strength.
+
+    Counts are round(frac * n_shots). Shot 0 and shots with hit <= 0 are never chosen; ties
+    are broken by earliest shot. Flash shots are always a subset of punch shots.
+    """
+    n = len(hits)
+    order = sorted((i for i in range(1, n) if hits[i] > 0), key=lambda i: (-hits[i], i))
+    punch = set(order[:int(round(punch_frac * n))])
+    flash = set(order[:int(round(flash_frac * n))])
+    return [i in punch for i in range(n)], [i in flash for i in range(n)]
+
+
+# ---------------------------------------------------------------- top level
+def plan_from_analysis(an: Analysis, fps: int, beats_per_cut: Optional[int] = None,
+                       punch: bool = False, flash: bool = False) -> Plan:
+    length = an.length
+    beats = an.beats[(an.beats >= 0) & (an.beats < length)]
+    if beats_per_cut:
+        cuts = every_n_beats(beats, beats_per_cut, length)
+        mode = f"beats_per_cut={beats_per_cut}"
+    elif beats.size >= 4:
+        # energy intervals also cover the stretch before the first detected beat
+        bounds = beats if beats[0] <= 1e-3 else np.concatenate([[0.0], beats])
+        en = interval_energy(bounds, an.rms, an.rms_times, length)
+        efn = make_energy_fn(bounds, en)
+        cuts = auto_cuts(beats, an.tempo, an.strong_onsets, efn, length,
+                         hit_fn=make_hit_fn(an.onset_env, an.onset_env_times))
+        mode = "auto"
+    else:
+        cuts, mode = fallback_cuts(an.strong_onsets, length)
+        mode = "fallback-" + mode
+    if mode == "auto":
+        efn_final = efn
+    else:
+        b = np.arange(0.0, length, 0.5)
+        efn_final = make_energy_fn(b, interval_energy(b, an.rms, an.rms_times, length))
+    frames = finalize_frames(cuts, length, fps)
+    shots = [Shot(i, s, n, fps, round(efn_final(s / fps), 3)) for i, (s, n) in enumerate(frames)]
+    hits = hit_strengths([sh.start for sh in shots], an.onset_env, an.onset_env_times)
+    pu, fl = select_fx(hits)
+    for sh, h, p, f in zip(shots, hits, pu, fl):
+        sh.hit = round(h, 3)
+        sh.punch = bool(punch and p)
+        sh.flash = bool(flash and f)
+    return Plan(length, fps, mode, an.tempo, shots)
+
+
+def compose_plan(intro_frames: Sequence[int], music: Plan) -> Plan:
+    """Intro shots first (one shot per dialogue region, never split, no FX), then the music
+    section shifted by the intro length. Total frames = sum(intro) + music frames."""
+    fps = music.fps
+    shots: List[Shot] = []
+    pos = 0
+    for n in intro_frames:
+        shots.append(Shot(len(shots), pos, int(n), fps, 0.0, 0.0, False, False, "intro"))
+        pos += int(n)
+    for sh in music.shots:
+        shots.append(Shot(len(shots), pos + sh.start_frame, sh.frames, fps, sh.energy, sh.hit,
+                          sh.punch, sh.flash, "music"))
+    t_intro = pos / fps
+    return Plan(music.output_len + t_intro, fps, music.mode, music.tempo, shots, t_intro)
