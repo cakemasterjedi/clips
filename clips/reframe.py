@@ -65,6 +65,7 @@ class View:
     fov: float = H_FOV
     track: Optional[Tuple[float, float, float, float]] = None   # flat: x0, y0, x1, y1 (0..1)
     roll: float = 0.0
+    place: float = 0.5                        # flat track: action's height in the frame (0 top)
     keys: Optional[List["Keyframe"]] = None   # animated view (keyframes in source seconds)
     start: float = 0.0                        # source time of the shot's first frame
     cmds: Optional[Path] = None               # sendcmd file for the animated view (render)
@@ -368,11 +369,12 @@ def track_crop(view: Optional[View], length: float, size: Tuple[int, int]) -> st
     x0, y0, x1, y1 = view.track
     L = max(length, 1e-3)
 
-    def axis(c0, c1, full, win):
+    def axis(c0, c1, full, win, place=0.5):
         return (f"'max(0,min({full}-{win},({c0:.4f}+({c1 - c0:.4f})*min(t/{L:.4f},1))*{full}"
-                f"-{win}/2))'")
+                f"-{win}*{place:.4f}))'")
 
-    return f"crop={w}:{h}:x={axis(x0, x1, 'iw', w)}:y={axis(y0, y1, 'ih', h)}"
+    return (f"crop={w}:{h}:x={axis(x0, x1, 'iw', w)}:"
+            f"y={axis(y0, y1, 'ih', h, view.place)}")
 
 
 # ---------------------------------------------------------------- analysis
@@ -405,10 +407,11 @@ def strip_frames(path: Path, view: View, start: float, length: float) -> np.ndar
                  AW, AH)
 
 
-def yaw_pitch_from_motion(frames: np.ndarray, seams: bool) -> Tuple[float, float]:
-    """Yaw/pitch (deg) of the strongest motion in equirectangular gray frames."""
+def motion_target(frames: np.ndarray, seams: bool) -> Optional[Tuple[float, float]]:
+    """Yaw/pitch (deg) of the strongest motion in equirectangular gray frames, None if
+    nothing moves."""
     if len(frames) < 2:
-        return 0.0, 0.0
+        return None
     d = np.abs(np.diff(frames, axis=0)).sum(axis=0)          # (AH, AW)
     lat = (0.5 - (np.arange(AH) + 0.5) / AH) * 180.0
     band = np.abs(lat) <= 60
@@ -421,12 +424,17 @@ def yaw_pitch_from_motion(frames: np.ndarray, seams: bool) -> Tuple[float, float
         near = np.minimum(np.abs(yaws - 90), np.abs(yaws + 90)) < SEAM_WIDTH
         col = np.where(near, col * SEAM_WEIGHT, col)
     if col.max() <= 1e-6 * max(1.0, d.size):
-        return 0.0, 0.0
+        return None
     j = int(np.argmax(col))
     lo, hi = max(0, j - k), min(AW, j + k + 1)
     rows = d[:, lo:hi].sum(axis=1)
     pitch = float((rows * lat).sum() / rows.sum()) if rows.sum() > 0 else 0.0
     return round(float(yaws[j]), 2), round(float(np.clip(pitch, -MAX_PITCH, MAX_PITCH)), 2)
+
+
+def yaw_pitch_from_motion(frames: np.ndarray, seams: bool) -> Tuple[float, float]:
+    """Yaw/pitch (deg) of the strongest motion in equirectangular gray frames (0, 0 if none)."""
+    return motion_target(frames, seams) or (0.0, 0.0)
 
 
 def auto_view(path: Path, view: View, start: float, length: float) -> View:

@@ -72,7 +72,10 @@ Audio is loudness-normalized to -14 LUFS (true peak -1.5 dB) in two passes after
   learned share of shots and zoom size), `--fit`, intro on/off and `--intro-max`, `--music-in`,
   `--rise`, and `--audio-start auto` shifted so the song's drop lands `lead_in` seconds into the
   music, like in the references. Flags you pass always win.
-- The profile is plain JSON (`pacing`, `fx`, `fit`, `intro`, `music`, plus per-video `refs`);
+- It also learns how the creator frames: how many of their shots have a moving camera and how
+  fast it pans (frame widths per second), slow push-ins (zoom per second) and how high in the
+  frame the action sits (`framing` in the profile). See auto framing below.
+- The profile is plain JSON (`pacing`, `fx`, `fit`, `intro`, `music`, `framing`, plus per-video `refs`);
   edit it by hand if a value looks off. Captions are not learned.
 - Reference videos are third-party media: keep them out of the repo.
 
@@ -82,6 +85,17 @@ Audio is loudness-normalized to -14 LUFS (true peak -1.5 dB) in two passes after
 - Each shot is reframed to a flat 1080x1920 view with FFmpeg `v360`. The view follows the motion in that shot (yaw from where the most movement is, pitch capped at +-30 deg). `--yaw DEG [--pitch DEG]` fixes the view, `--fov DEG` sets the horizontal field of view (default 60). `--360 auto|off|equirect|dfisheye` overrides detection.
 - Quality vs Insta360 Studio: `.insv` is stitched with a generic 200 deg fisheye model, with no per-camera lens calibration, no seam blending, no FlowState stabilization and no horizon levelling (those need Insta360's software and gyro data). The auto view keeps away from the lens seams (yaw +-90), but a view pointed at a seam can show a visible line. For best quality, export a 360 MP4 from Insta360 Studio and use that.
 - `--dry-run` reports `view` per shot (kind, lenses, yaw, pitch, fov, roll, the number of keyframes when a keyframe file is used, or the track for `--fit track`).
+
+### Auto framing like a creator
+
+```
+clips autoframe CLIPS_FOLDER --style creator.json      # write keyframe files only
+clips CLIPS_FOLDER --audio song.mp3 --style creator.json --auto-frame -o out.mp4
+```
+
+A virtual camera operator follows the action through each 360 clip the way the creator's own camera moves: a creator who rarely moves the camera gets a wide dead zone (the view only re-aims when the action drifts out of the middle), a busy one keeps the action centred; turns are capped at their pan speed; the view slowly pushes in while the camera holds, if they push in; and the pitch puts the action at the height it sits in their frames. The result is written as the clip's keyframe file (`<clip>.view.json`), so `clips frame` opens it for hand adjustment. Clips that already have a keyframe file are left alone (`clips autoframe --force` replaces them); `--dry-run` writes nothing. Without `--style`, neutral defaults are used.
+
+With `--style` and `--fit track`, flat footage follows the same profile: the crop holds still for creators who rarely move the camera and places the action at their height in the frame.
 
 ### Framing by hand: `clips frame`
 

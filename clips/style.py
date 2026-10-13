@@ -15,7 +15,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Tuple, Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -39,6 +39,10 @@ ZOOM_SCALES = np.round(np.arange(1.0, 1.205, 0.02), 3)
 ZOOM_MIN = 1.05
 ZOOM_GAIN = 0.75             # best-scale error must be below this share of the no-zoom error
 BAND = 0.12                  # top/bottom band height for fit detection
+FRAME_STEP = 6               # frames between the pairs compared for camera motion (0.2 s)
+MOVE_PAN = 0.04              # frame widths/s of pan that count as a moving camera
+MOVE_PUSH = 0.03             # zoom per second (log scale) that counts as a push-in/pull-out
+PUSH_SCALES = np.round(np.arange(1.0, 1.0605, 0.005), 3)
 DEFAULT_CACHE = Path.home() / ".cache" / "clips" / "refs"
 URL_RE = re.compile(r"^https?://", re.I)
 
@@ -284,6 +288,88 @@ def fit_max_shot(lengths: np.ndarray, energies: np.ndarray, period: float) -> fl
     return float(np.clip(m, max(period, A.MIN_SHOT), A.MAX_SHOT))
 
 
+# ---------------------------------------------------------------- framing
+def phase_shift(a: np.ndarray, b: np.ndarray) -> Tuple[float, float]:
+    """(dx, dy) in px that moves image a onto b (phase correlation, sub-pixel peak)."""
+    win = np.outer(np.hanning(a.shape[0]), np.hanning(a.shape[1]))
+    fa, fb = np.fft.fft2(_norm(a) * win), np.fft.fft2(_norm(b) * win)
+    r = fb * np.conj(fa)
+    r = np.real(np.fft.ifft2(r / np.maximum(np.abs(r), 1e-9)))
+    iy, ix = np.unravel_index(int(np.argmax(r)), r.shape)
+    h, w = r.shape
+
+    def sub(c, m, n):     # parabola through the peak and its neighbours (circular)
+        l, mid, rr = m(c - 1), m(c), m(c + 1)
+        den = l - 2 * mid + rr
+        off = 0.5 * (l - rr) / den if abs(den) > 1e-9 else 0.0
+        v = c + float(np.clip(off, -0.5, 0.5))
+        return v - n if v > n / 2 else v
+
+    dx = sub(ix, lambda c: r[iy, c % w], w)
+    dy = sub(iy, lambda c: r[c % h, ix], h)
+    return dx, dy
+
+
+def push_rate(a: np.ndarray, b: np.ndarray, dt: float, shift=(0.0, 0.0)) -> float:
+    """Zoom per second (log scale, + = push in) between frames a and b dt apart; b is first
+    moved back by the pan `shift` (dx, dy px) so a pan does not read as a zoom."""
+    h, w = a.shape
+    m = (slice(h // 6, h - h // 6), slice(w // 6, w - w // 6))
+    b = np.roll(b, (-int(round(shift[1])), -int(round(shift[0]))), axis=(0, 1))
+    na, nb = _norm(a.astype(np.float32)), _norm(b.astype(np.float32))
+    best = (float(np.abs(na[m] - nb[m]).mean()), 1.0)
+    for sc in PUSH_SCALES[1:]:
+        best = min(best, (float(np.abs(zoom(na, sc)[m] - nb[m]).mean()), sc),
+                   (float(np.abs(zoom(nb, sc)[m] - na[m]).mean()), 1 / sc))
+    return float(np.log(best[1]) / dt)
+
+
+def content_rows(frames: np.ndarray) -> slice:
+    """Rows of the picture, without black/blurred letterbox bands (fit != crop)."""
+    fit = detect_fit(frames[:: max(1, len(frames) // 20)])
+    if fit == "crop":
+        return slice(0, frames.shape[1])
+    col = frames[:: max(1, len(frames) // 20)].astype(np.float32)
+    var = np.abs(np.diff(col, axis=2)).mean(axis=(0, 2))       # texture per row
+    rows = np.where(var > 0.5 * np.median(var[var > np.percentile(var, 60)]))[0]
+    if rows.size < frames.shape[1] // 4:
+        return slice(0, frames.shape[1])
+    return slice(int(rows[0]), int(rows[-1]) + 1)
+
+
+def shot_framing(frames: np.ndarray, start: int, end: int, rows: slice) -> Optional[dict]:
+    """Camera motion and subject height inside one shot (None if too short)."""
+    a = start + ZOOM_LOOK + 2                 # skip a punch-in settling after the cut
+    if end - a < 2 * FRAME_STEP:
+        return None
+    f = frames[a:end, rows].astype(np.float32)
+    idx = np.arange(0, len(f) - FRAME_STEP, FRAME_STEP)
+    shifts = np.array([phase_shift(f[i], f[i + FRAME_STEP]) for i in idx])
+    dt = FRAME_STEP / AFPS
+    h, w = f.shape[1:]
+    pan = float(np.hypot(*np.median(shifts, axis=0))) / w / dt     # frame widths / s
+    pushes = [push_rate(f[i], f[i + FRAME_STEP], dt, sh) for i, sh in zip(idx, shifts)]
+    push = float(np.median(pushes))
+    d = np.abs(np.diff(f[:: 3], axis=0))
+    d = np.where(d > 12, d, 0).sum(axis=(0, 2))                 # motion per row
+    y = float((d * (np.arange(h) + 0.5) / h).sum() / d.sum()) if d.sum() > 0 else 0.5
+    return {"pan": pan, "push": push, "subject_y": y, "len": (end - a) / AFPS}
+
+
+def framing_stats(frames: np.ndarray, starts: Sequence[int], ends: Sequence[int]) -> dict:
+    rows = content_rows(frames)
+    shots = [s for s in (shot_framing(frames, a, b, rows) for a, b in zip(starts, ends)) if s]
+    if not shots:
+        return {}
+    moving = [s for s in shots if s["pan"] >= MOVE_PAN]
+    pushing = [s for s in shots if abs(s["push"]) >= MOVE_PUSH]
+    return {"moving": round(len(moving) / len(shots), 3),
+            "pan_speed": round(float(np.median([s["pan"] for s in moving])), 3) if moving else 0.0,
+            "push_share": round(len(pushing) / len(shots), 3),
+            "push": round(float(np.median([s["push"] for s in pushing])), 3) if pushing else 0.0,
+            "subject_y": round(float(np.median([s["subject_y"] for s in shots])), 3)}
+
+
 # ---------------------------------------------------------------- one reference
 @dataclass
 class RefStats:
@@ -328,6 +414,7 @@ def analyze_reference(path, label: Optional[str] = None) -> RefStats:
     scales = [punch_scale(frames, s, e, lum) for s, e in zip(starts[1:], ends[1:])]
     flashes = [is_flash(frames, c, lum) for c in cut_f]
     fit = detect_fit(frames)
+    framing = framing_stats(frames, starts, ends)
     del frames
 
     t_intro, tempo, beats = 0.0, 0.0, np.zeros(0)
@@ -390,7 +477,7 @@ def analyze_reference(path, label: Optional[str] = None) -> RefStats:
         punch=round(len(pz) / len(scales), 3) if scales else 0.0,
         punch_zoom=round(float(np.median(pz)) - 1.0, 3) if pz else 0.0,
         flash=round(float(np.mean(flashes)), 3) if flashes else 0.0,
-        fit=fit, music_in=music_in, rise=rise, lead_in=lead)
+        fit=fit, music_in=music_in, rise=rise, lead_in=lead, extra={"framing": framing})
 
 
 # ---------------------------------------------------------------- profile
@@ -426,8 +513,28 @@ def build_profile(stats: Sequence[RefStats], name: str) -> dict:
         "music": {"music_in": music_in,
                   "rise": round(float(np.median([s.rise for s in rises])), 2) if rises else 0.0,
                   "lead_in": med("lead_in")},
+        "framing": merge_framing([s.extra.get("framing") or {} for s in stats]),
         "refs": [s.to_dict() for s in stats],
     }
+
+
+FRAMING_DEFAULT = {"moving": 0.5, "pan_speed": 0.15, "push_share": 0.0, "push": 0.0,
+                   "subject_y": 0.5}
+
+
+def merge_framing(items: Sequence[dict]) -> dict:
+    """Median of each framing measure over the references that have one."""
+    items = [f for f in items if f]
+    if not items:
+        return {}
+    out = {}
+    for k in FRAMING_DEFAULT:
+        vals = [f[k] for f in items if k in f]
+        if k in ("pan_speed", "push"):        # only from the videos that move / push
+            share = "moving" if k == "pan_speed" else "push_share"
+            vals = [f[k] for f in items if f.get(share, 0) > 0]
+        out[k] = round(float(np.median(vals)), 3) if vals else 0.0
+    return out
 
 
 def learn(items: Sequence[str], name: str, cache: Path = DEFAULT_CACHE) -> dict:

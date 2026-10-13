@@ -55,6 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yaw", type=float, help="360 view direction in degrees (default: follow motion)")
     p.add_argument("--pitch", type=float, default=0.0, help="360 view pitch in degrees (with --yaw)")
     p.add_argument("--fov", type=float, default=60.0, help="360 view horizontal field of view (deg)")
+    p.add_argument("--auto-frame", action="store_true",
+                   help="frame 360 clips like the --style creator: write keyframe files "
+                        "(<clip>.view.json, editable with `clips frame`) for clips without one")
     p.add_argument("--smart-pick", action="store_true",
                    help="give the busiest, sharpest footage to the opening shot and strongest hits")
     p.add_argument("--seed", type=int)
@@ -92,8 +95,10 @@ def apply_style(args) -> dict:
     knobs = {"max_shot": audio_mod.AUTO_MAX_SHOT, "onset_cuts": True,
              "punch_frac": audio_mod.PUNCH_FRAC, "flash_frac": audio_mod.FLASH_FRAC,
              "punch_zoom": None, "lead": 0.0}
+    args._framing = None
     if args.style:
         prof = style_mod.load_profile(args.style)
+        args._framing = prof.get("framing") or None
         pace, fx, mus, intro = (prof.get(k, {}) for k in ("pacing", "fx", "music", "intro"))
         if args.beats_per_cut is None and pace.get("beats_per_cut"):
             args.beats_per_cut = int(pace["beats_per_cut"])
@@ -140,12 +145,26 @@ def build_views(args, plan, sources, assigns):
         return None
     if args.fov <= 0 or args.fov >= 180:
         raise ClipsError("--fov must be between 0 and 180")
+    from . import autoframe
+    framing = autoframe.framing_of({"framing": getattr(args, "_framing", None)})
+    auto_keys = {}
+    if getattr(args, "auto_frame", False) and args.yaw is None:
+        for i, v in base.items():
+            s = sources[i]
+            if v.is360 and not reframe.sidecar_path(s.path).exists():
+                keys = autoframe.auto_keyframes(s.path, v, s.duration, framing, args.fov)
+                auto_keys[i] = keys
+                if not args.dry_run:
+                    autoframe.write_keyframes(s.path, keys)
+                    print(f"auto-framed {s.path.name}: {len(keys)} keyframes -> "
+                          f"{reframe.sidecar_path(s.path).name}", file=sys.stderr)
     views = []
     for sh, a in zip(plan.shots, assigns):
         s, v = sources[a.source], base[a.source]
         if v.is360:
             v = reframe.View(v.kind, v.lenses, v.pair, fov=args.fov)
-            keys = None if args.yaw is not None else reframe.load_keyframes(s.path)
+            keys = None if args.yaw is not None else (auto_keys.get(a.source)
+                                                      or reframe.load_keyframes(s.path))
             if args.yaw is not None:
                 v.yaw, v.pitch = args.yaw, args.pitch
             elif keys:
@@ -157,6 +176,8 @@ def build_views(args, plan, sources, assigns):
         elif args.fit == "track":
             info = s.info or probe(s.path)
             v = reframe.track_view(s.path, a.start, sh.length, info.width or 1080, info.height or 1920)
+            if getattr(args, "_framing", None):
+                v.track, v.place = autoframe.flat_track(v.track, framing)
         views.append(v)
     return views
 
@@ -366,6 +387,20 @@ def build_frame_parser() -> argparse.ArgumentParser:
     return p
 
 
+def build_autoframe_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="clips autoframe",
+        description="Write keyframe files (<clip>.view.json) that frame 360 clips like a "
+                    "learned creator; open them in `clips frame` to adjust.")
+    p.add_argument("input", help="360 clip or folder")
+    p.add_argument("--style", metavar="PROFILE.json", help="creator profile from `clips learn`")
+    p.add_argument("--fov", type=float, default=60.0, help="base horizontal field of view (deg)")
+    p.add_argument("--360", dest="mode360", default="auto",
+                   choices=["auto", "equirect", "dfisheye"], help="force the 360 layout")
+    p.add_argument("--force", action="store_true", help="replace existing keyframe files")
+    return p
+
+
 def run_learn(args) -> int:
     prof = style_mod.learn(args.refs, args.name or Path(args.output).stem, Path(args.cache))
     out = Path(args.output)
@@ -381,17 +416,22 @@ def run_learn(args) -> int:
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    sub = argv[0] if argv and argv[0] in ("learn", "frame") else None
+    sub = argv[0] if argv and argv[0] in ("learn", "frame", "autoframe") else None
     if sub == "learn":
         args = build_learn_parser().parse_args(argv[1:])
     elif sub == "frame":
         args = build_frame_parser().parse_args(argv[1:])
+    elif sub == "autoframe":
+        args = build_autoframe_parser().parse_args(argv[1:])
     else:
         args = build_parser().parse_args(argv)
     try:
         if sub == "frame":
             from .frame import run_frame
             return run_frame(args)
+        if sub == "autoframe":
+            from .autoframe import run_autoframe
+            return run_autoframe(args)
         return run_learn(args) if sub == "learn" else run(args)
     except ClipsError as exc:
         print(f"error: {exc}", file=sys.stderr)
