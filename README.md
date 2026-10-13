@@ -13,6 +13,9 @@ Everything runs on your machine; no paid APIs.
 Needs Python 3.10+. If ffmpeg is missing it tries your package manager (may ask for your
 password) and otherwise falls back to a bundled build. Re-running is safe.
 
+To update later: `./update.sh` (pulls the latest code from GitHub, refreshes the
+requirements and prints what changed).
+
 ## Quick test
 
 Put a few phone clips in a folder and pick a song (mp3/m4a/wav):
