@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import audio as audio_mod
 from . import footage as footage_mod
+from . import gpu as gpu_mod
 from . import intro as intro_mod
 from . import sources as src_mod
 from . import style as style_mod
@@ -55,6 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "and, with --audio-start auto, use the next best song sections")
     p.add_argument("--no-loudnorm", action="store_true",
                    help="skip the two-pass loudness normalization to -14 LUFS")
+    p.add_argument("--gpu", choices=gpu_mod.MODES, default="auto",
+                   help="decode and encode on the GPU with VAAPI (AMD/Intel on Linux): auto = when "
+                        "it works, else CPU (default); vaapi = require it; off = CPU only. "
+                        "Filters always run on the CPU")
     p.add_argument("--export-edl", metavar="FILE.edl",
                    help="also write the cut plan as a CMX3600 EDL for Resolve / Premiere")
     p.add_argument("--360", dest="mode360", choices=("auto", "off", "equirect", "dfisheye"),
@@ -396,10 +401,14 @@ def run(args) -> int:
            Path(args.output), fit=args.fit, sub_style=args.sub_style,
            word_reveal=args.word_reveal, intro=ia,
            loop=args.loop, preview=args.preview, loudnorm=not args.no_loudnorm, views=views,
-           zoom=args.zoom,
+           zoom=args.zoom, **gpu_kwargs(args),
            **({"punch_zoom": knobs["punch_zoom"]} if knobs["punch_zoom"] else {}))
     print(f"wrote {args.output}", file=sys.stderr)
     return 0
+
+
+def gpu_kwargs(args) -> dict:
+    return {"gpu": gpu_mod.resolve(args.gpu), "gpu_required": args.gpu == "vaapi"}
 
 
 NO_MUSIC_LEN = 20.0        # output length without a song when --duration is not given
@@ -448,6 +457,7 @@ def run_no_music(args, knobs) -> int:
         render(plan, sources, assigns, wav, 0.0, args.subs, Path(args.output), fit=args.fit,
                sub_style=args.sub_style, word_reveal=args.word_reveal, preview=args.preview,
                loudnorm=not (args.no_loudnorm or args.mute), views=views, zoom=args.zoom,
+               **gpu_kwargs(args),
                **({"punch_zoom": knobs["punch_zoom"]} if knobs["punch_zoom"] else {}))
     print(f"wrote {args.output}", file=sys.stderr)
     return 0
