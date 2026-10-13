@@ -166,10 +166,12 @@ def section_scores(candidates: Sequence[float], window: float, rms: np.ndarray,
 
 
 def pick_section(window: float, song_len: float, beats: np.ndarray, rms: np.ndarray,
-                 rms_times: np.ndarray, env: np.ndarray, env_times: np.ndarray
-                 ) -> Tuple[float, List[Tuple[float, float]]]:
+                 rms_times: np.ndarray, env: np.ndarray, env_times: np.ndarray,
+                 rank: int = 0) -> Tuple[float, List[Tuple[float, float]]]:
     """Best start (on a detected beat, or 0) for a `window`-second excerpt that fits the song.
-    Returns (start, top candidates as (start, score), best first). Ties go to the earlier start."""
+    Returns (start, top candidates as (start, score), best first). Ties go to the earlier start.
+    The candidates are distinct sections, at least min(window/2, 8 s) apart; `rank` picks the
+    rank-th one instead of the best (the last one if there are fewer)."""
     latest = song_len - window
     if latest <= 0:
         return 0.0, [(0.0, 0.0)]
@@ -177,11 +179,19 @@ def pick_section(window: float, song_len: float, beats: np.ndarray, rms: np.ndar
     cands = cands[(cands >= 0) & (cands <= latest + 1e-6)]
     scores = section_scores(cands, window, rms, rms_times, env, env_times)
     order = sorted(range(cands.size), key=lambda i: (-round(scores[i], 6), cands[i]))
-    top = [(round(float(cands[i]), 3), round(float(scores[i]), 4)) for i in order[:5]]
-    return float(cands[order[0]]), top
+    sep = min(window / 2, 8.0)
+    kept: List[int] = []
+    for i in order:
+        if all(abs(cands[i] - cands[j]) >= sep - 1e-6 for j in kept):
+            kept.append(i)
+            if len(kept) == 5:
+                break
+    top = [(round(float(cands[i]), 3), round(float(scores[i]), 4)) for i in kept]
+    return float(cands[kept[min(rank, len(kept) - 1)]]), top
 
 
-def auto_audio_start(path, window: float, lead: float = 0.0) -> Tuple[float, List[Tuple[float, float]]]:
+def auto_audio_start(path, window: float, lead: float = 0.0,
+                     rank: int = 0) -> Tuple[float, List[Tuple[float, float]]]:
     """Analyse the whole song and pick where the `window`-second excerpt should start.
     lead > 0 (from a style profile): the best drop is found for the part of the window after
     the lead, and the start moves back to the beat closest to `lead` seconds before it."""
@@ -199,8 +209,9 @@ def auto_audio_start(path, window: float, lead: float = 0.0) -> Tuple[float, Lis
     env_times = librosa.frames_to_time(np.arange(env.size), sr=SR, hop_length=HOP)
     env = np.asarray(env, float)
     if lead <= 0:
-        return pick_section(window, song_len, beats, rms, rms_times, env, env_times)
-    drop, top = pick_section(max(window - lead, 1.0), song_len, beats, rms, rms_times, env, env_times)
+        return pick_section(window, song_len, beats, rms, rms_times, env, env_times, rank)
+    drop, top = pick_section(max(window - lead, 1.0), song_len, beats, rms, rms_times, env,
+                             env_times, rank)
     cands = np.concatenate([[0.0], np.asarray(beats, float)])
     cands = cands[cands <= drop + 1e-6]
     start = float(cands[np.argmin(np.abs(cands - (drop - lead)))])

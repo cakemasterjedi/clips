@@ -24,7 +24,9 @@ def test_picks_the_drop(build_drop):
     # any start in [20, 25] keeps the window fully loud; the drop term wins at 20
     assert start == pytest.approx(20.0, abs=0.3)
     assert top[0][0] == pytest.approx(start, abs=1e-3)
-    assert len(top) == 5 and top[0][1] >= top[1][1]
+    assert 3 <= len(top) <= 5 and top[0][1] >= top[1][1]
+    starts = [t for t, _ in top]                     # distinct sections, >= 7.5 s apart
+    assert min(abs(a - b) for a in starts for b in starts if a != b) >= 7.5 - 1e-6
 
 
 def test_window_must_fit(build_drop):

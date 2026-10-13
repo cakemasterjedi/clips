@@ -42,6 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "dissolve the last shot into the first frame")
     p.add_argument("--preview", action="store_true",
                    help="fast draft: shots rendered small and upscaled, quick low-quality encode")
+    p.add_argument("--variations", type=int, default=1, metavar="N",
+                   help="render N versions (_v1.._vN): v1 as asked, others reshuffle footage "
+                        "and, with --audio-start auto, use the next best song sections")
     p.add_argument("--smart-pick", action="store_true",
                    help="give the busiest, sharpest footage to the opening shot and strongest hits")
     p.add_argument("--seed", type=int)
@@ -114,7 +117,38 @@ def apply_style(args) -> dict:
     return knobs
 
 
+def variant_args(args, k: int):
+    """Copy of args for variation k (0 = as given): reshuffled footage with a new seed and,
+    when the song start is automatic, the k-th best distinct song section."""
+    v = argparse.Namespace(**vars(args))
+    v.variations, v._variant = 1, k
+    if k:
+        v.shuffle = True
+        v.seed = (args.seed or 0) + k
+    if args.output:
+        o = Path(args.output)
+        v.output = str(o.with_name(f"{o.stem}_v{k + 1}{o.suffix or '.mp4'}"))
+    return v
+
+
+def run_variations(args) -> int:
+    if not 2 <= args.variations <= 10:
+        raise ClipsError("--variations must be between 2 and 10")
+    docs = [] if args.dry_run else None
+    for k in range(args.variations):
+        v = variant_args(args, k)
+        v._collect = docs
+        if not args.dry_run:
+            print(f"variation {k + 1}/{args.variations}: {v.output}", file=sys.stderr)
+        run(v)
+    if docs is not None:
+        print(json.dumps({"variations": docs}, indent=2))
+    return 0
+
+
 def run(args) -> int:
+    if args.variations != 1:
+        return run_variations(args)
     knobs = apply_style(args)
     if not args.output and not args.dry_run:
         raise ClipsError("-o/--output is required unless --dry-run")
@@ -159,7 +193,8 @@ def run(args) -> int:
     section_cands = []
     if args.audio_start == "auto":
         window = audio_mod.AUTO_WINDOW if args.duration is None else args.duration - t_intro
-        audio_start, section_cands = audio_mod.auto_audio_start(args.audio, window, knobs["lead"])
+        audio_start, section_cands = audio_mod.auto_audio_start(args.audio, window, knobs["lead"],
+                                                                getattr(args, "_variant", 0))
         print(f"note: --audio-start auto picked {audio_start:.2f}s", file=sys.stderr)
     else:
         audio_start = args.audio_start
@@ -203,15 +238,19 @@ def run(args) -> int:
                   "energy": s.energy, "loop": a.loop,
                   "hit": s.hit, "punch": s.punch, "flash": s.flash, "ramp": s.ramp}
                  for s, a in zip(plan.shots, assigns)]
-        print(json.dumps({"intro": [r.to_dict() for r in regions],
-                          "candidates": [r.to_dict() for r in candidates],
-                          "audio_start": round(audio_start, 4),
-                          "audio_start_lead": knobs["lead"],
-                          "style": args.style, "loop_match": loop_sim, "fit": args.fit,
-                          "audio_start_candidates": [{"start": t, "score": sc}
-                                                     for t, sc in section_cands],
-                          "music_in": args.music_in, "rise": args.rise,
-                          "t_intro": round(t_intro, 4), "shots": shots}, indent=2))
+        doc = {"intro": [r.to_dict() for r in regions],
+               "candidates": [r.to_dict() for r in candidates],
+               "audio_start": round(audio_start, 4),
+               "audio_start_lead": knobs["lead"],
+               "style": args.style, "loop_match": loop_sim, "fit": args.fit,
+               "audio_start_candidates": [{"start": t, "score": sc}
+                                          for t, sc in section_cands],
+               "music_in": args.music_in, "rise": args.rise,
+               "t_intro": round(t_intro, 4), "shots": shots}
+        if getattr(args, "_collect", None) is not None:
+            args._collect.append(doc)
+        else:
+            print(json.dumps(doc, indent=2))
         return 0
     from .render import IntroAudio, render
 
