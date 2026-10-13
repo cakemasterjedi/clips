@@ -37,6 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--audio-start", type=audio_start_arg, default=None, metavar="SECONDS|auto",
                    help="start offset in the song (s), or 'auto' to pick the drop / most energetic part")
     p.add_argument("--shuffle", action="store_true")
+    p.add_argument("--loop", action="store_true",
+                   help="seamless replay: end on the beat that sounds most like the start and "
+                        "dissolve the last shot into the first frame")
     p.add_argument("--smart-pick", action="store_true",
                    help="give the busiest, sharpest footage to the opening shot and strongest hits")
     p.add_argument("--seed", type=int)
@@ -158,6 +161,11 @@ def run(args) -> int:
         audio_start = args.audio_start
     music_len = audio_mod.output_length(alen, audio_start,
                                         None if args.duration is None else args.duration - t_intro)
+    loop_sim = None
+    if args.loop:
+        music_len, loop_sim = audio_mod.loop_length(args.audio, audio_start, music_len)
+        print(f"note: --loop ends the music at {music_len:.2f}s (match {loop_sim:.2f})",
+              file=sys.stderr)
     an = audio_mod.analyze(args.audio, audio_start, music_len)
     plan = audio_mod.plan_from_analysis(an, fps, args.beats_per_cut, args.punch, args.flash,
                                         knobs["max_shot"], knobs["onset_cuts"],
@@ -195,7 +203,7 @@ def run(args) -> int:
                           "candidates": [r.to_dict() for r in candidates],
                           "audio_start": round(audio_start, 4),
                           "audio_start_lead": knobs["lead"],
-                          "style": args.style, "fit": args.fit,
+                          "style": args.style, "loop_match": loop_sim, "fit": args.fit,
                           "audio_start_candidates": [{"start": t, "score": sc}
                                                      for t, sc in section_cands],
                           "music_in": args.music_in, "rise": args.rise,
@@ -212,6 +220,7 @@ def run(args) -> int:
     render(plan, all_sources, assigns, Path(args.audio), audio_start, args.subs,
            Path(args.output), fit=args.fit, sub_style=args.sub_style,
            word_reveal=args.word_reveal, intro=ia,
+           loop=args.loop,
            **({"punch_zoom": knobs["punch_zoom"]} if knobs["punch_zoom"] else {}))
     print(f"wrote {args.output}", file=sys.stderr)
     return 0

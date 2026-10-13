@@ -206,6 +206,63 @@ def auto_audio_start(path, window: float, lead: float = 0.0) -> Tuple[float, Lis
     return start, top   # top = drop candidates; the start is `lead` before the best one
 
 
+# ---------------------------------------------------------------- loop ending
+LOOP_SEARCH_BEATS = 8     # how far before the requested end the loop point may move
+
+
+def _beat_features(y: np.ndarray, sr: int, a: float, b: float) -> Optional[np.ndarray]:
+    import librosa
+
+    seg = y[int(a * sr):int(b * sr)]
+    if seg.size < sr // 8:
+        return None
+    chroma = librosa.feature.chroma_stft(y=seg, sr=sr, hop_length=HOP).mean(axis=1)
+    mfcc = librosa.feature.mfcc(y=seg, sr=sr, n_mfcc=13, hop_length=HOP).mean(axis=1)[1:]
+    v = np.concatenate([chroma / (np.linalg.norm(chroma) + 1e-9), mfcc / (np.linalg.norm(mfcc) + 1e-9)])
+    return v / (np.linalg.norm(v) + 1e-9)
+
+
+def pick_loop_end(y: np.ndarray, sr: int, beats: np.ndarray, length: float,
+                  search: int = LOOP_SEARCH_BEATS) -> Tuple[float, float]:
+    """Music length that ends on a beat whose continuation sounds most like the opening beat,
+    Infinite-Jukebox style, so the replay's jump back to the start is hard to hear.
+    Candidates are the last `search` beats at or before `length` (never longer). Returns
+    (length, similarity); falls back to (length, 0) without usable beats."""
+    beats = np.asarray(beats, float)
+    beats = beats[(beats > 1.0) & (beats <= length + 1e-6)]
+    if beats.size == 0:
+        return length, 0.0
+    period = float(np.median(np.diff(beats))) if beats.size > 1 else 0.5
+    ref = _beat_features(y, sr, 0.0, period)
+    if ref is None:
+        return length, 0.0
+    best = (-2.0, float(beats[-1]))
+    cands = beats[-search:]
+    for k, e in enumerate(cands[::-1]):
+        f = _beat_features(y, sr, e, e + period)          # what would play after the end
+        if f is None:
+            f = _beat_features(y, sr, e - period, e)
+        if f is None:
+            continue
+        score = float(f @ ref) - 0.01 * k                   # mild preference for the full length
+        if score > best[0]:
+            best = (score, float(e))
+    return best[1], round(best[0], 3)
+
+
+def loop_length(path, audio_start: float, length: float) -> Tuple[float, float]:
+    """Music length for --loop (see pick_loop_end), analysing the song from audio_start."""
+    import librosa
+
+    y = decode(path, audio_start, length + 2.0)
+    if y.size == 0:
+        return length, 0.0
+    env = librosa.onset.onset_strength(y=y, sr=SR, hop_length=HOP)
+    _, bf = librosa.beat.beat_track(onset_envelope=env, sr=SR, hop_length=HOP)
+    beats = librosa.frames_to_time(bf, sr=SR, hop_length=HOP)
+    return pick_loop_end(y, SR, beats, length)
+
+
 # ---------------------------------------------------------------- energy
 def interval_energy(boundaries: Sequence[float], rms: np.ndarray, rms_times: np.ndarray,
                     length: float, smooth: int = 4) -> np.ndarray:

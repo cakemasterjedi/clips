@@ -19,32 +19,42 @@ FADE = 0.3
 
 FITS = ("crop", "letterbox", "blur")
 PUNCH_ZOOM = 0.12
+LOOP_BLEND = 0.25         # s; the last shot dissolves into the opening frame (--loop)
+LOOP_FADE = 0.02          # s; audio fade at the loop point (just enough to avoid a click)
 PUNCH_DUR = 0.18
 FLASH_DUR = 0.1
 
 
-def fit_graph(fit: str, fps: int) -> str:
-    """Filter graph from [0:v] to [f] producing exactly 1080x1920 for the chosen fit mode."""
+def fit_graph(fit: str, fps: int, inp: str = "0:v", out: str = "f") -> str:
+    """Filter graph from [inp] to [out] producing exactly 1080x1920 for the chosen fit mode."""
     if fit == "crop":
-        return (f"[0:v]fps={fps},scale=1080:1920:force_original_aspect_ratio=increase,"
-                f"crop=1080:1920[f]")
+        return (f"[{inp}]fps={fps},scale=1080:1920:force_original_aspect_ratio=increase,"
+                f"crop=1080:1920[{out}]")
     if fit == "letterbox":
-        return (f"[0:v]fps={fps},scale=1080:1920:force_original_aspect_ratio=decrease:"
-                f"force_divisible_by=2,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[f]")
+        return (f"[{inp}]fps={fps},scale=1080:1920:force_original_aspect_ratio=decrease:"
+                f"force_divisible_by=2,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[{out}]")
     if fit == "blur":
-        return (f"[0:v]fps={fps},split[a][b];"
-                f"[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
-                f"gblur=sigma=30,eq=brightness=-0.08[bg];"
-                f"[b]scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2[fg];"
-                f"[bg][fg]overlay=(W-w)/2:(H-h)/2[f]")
+        p = "" if out == "f" else out
+        return (f"[{inp}]fps={fps},split[{p}a][{p}b];"
+                f"[{p}a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
+                f"gblur=sigma=30,eq=brightness=-0.08[{p}bg];"
+                f"[{p}b]scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2[{p}fg];"
+                f"[{p}bg][{p}fg]overlay=(W-w)/2:(H-h)/2[{out}]")
     raise ValueError(f"unknown fit mode {fit!r}")
 
 
 def segment_filter(fit: str, fps: int, punch: bool = False, flash: bool = False,
-                   punch_zoom: float = PUNCH_ZOOM) -> str:
-    """Complete -filter_complex for one shot, output label [v]."""
+                   punch_zoom: float = PUNCH_ZOOM, blend_at: Optional[float] = None) -> str:
+    """Complete -filter_complex for one shot, output label [v]. blend_at (loop ending): from
+    that time on, the first frame of input 1 (the opening shot) fades in over the shot."""
     g = fit_graph(fit, fps)
     last = "f"
+    if blend_at is not None:
+        g += (";" + fit_graph(fit, fps, "1:v", "l0") +
+              f";[l0]trim=end_frame=1,loop=loop=-1:size=1,setpts=N/{fps}/TB,format=yuva420p,"
+              f"fade=t=in:st={blend_at:.6f}:d={LOOP_BLEND:.6f}:alpha=1[l1];"
+              f"[f][l1]overlay=shortest=1:format=auto[fb]")
+        last = "fb"
     if punch:
         z = f"(1+{punch_zoom:g}*pow(1-min(t/{PUNCH_DUR},1),2))"   # 1.12 -> 1.0, ease-out
         g += (f";[{last}]split[pb][pz];"
@@ -60,12 +70,19 @@ def segment_filter(fit: str, fps: int, punch: bool = False, flash: bool = False,
 
 def segment_args(src: Path, a: Assignment, frames: int, fps: int, out: Path,
                  fit: str = "crop", punch: bool = False, flash: bool = False,
-                 punch_zoom: float = PUNCH_ZOOM) -> List[str]:
+                 punch_zoom: float = PUNCH_ZOOM,
+                 blend_to: Optional[Tuple[Path, float]] = None) -> List[str]:
     args = ["-y"]
     if a.loop:
         args += ["-stream_loop", "-1"]
-    args += ["-ss", f"{a.start:.6f}", "-i", str(src), "-frames:v", str(frames), "-an",
-             "-filter_complex", segment_filter(fit, fps, punch, flash, punch_zoom), "-map", "[v]",
+    args += ["-ss", f"{a.start:.6f}", "-i", str(src)]
+    blend_at = None
+    if blend_to is not None:
+        args += ["-ss", f"{blend_to[1]:.6f}", "-i", str(blend_to[0])]
+        blend_at = max(frames / fps - LOOP_BLEND, 0.0)
+    args += ["-frames:v", str(frames), "-an",
+             "-filter_complex", segment_filter(fit, fps, punch, flash, punch_zoom, blend_at),
+             "-map", "[v]",
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-r", str(fps), str(out)]
     return args
 
@@ -80,10 +97,11 @@ def _video_chain(ass: Optional[Path]) -> str:
 
 
 def final_args(listfile: Path, audio: Path, audio_start: float, length: float, fps: int,
-               ass: Optional[Path], out: Path) -> List[str]:
+               ass: Optional[Path], out: Path, fade: float = FADE) -> List[str]:
+    fin = f"afade=t=in:st=0:d={fade}," if fade < FADE else ""   # loop: no click at the restart
     fc = (f"{_video_chain(ass)};"
-          f"[1:a]atrim=duration={length:.6f},asetpts=PTS-STARTPTS,"
-          f"afade=t=out:st={max(length - FADE, 0):.6f}:d={FADE}[a]")
+          f"[1:a]atrim=duration={length:.6f},asetpts=PTS-STARTPTS,{fin}"
+          f"afade=t=out:st={max(length - fade, 0):.6f}:d={fade}[a]")
     return ["-y", "-f", "concat", "-safe", "0", "-i", str(listfile),
             "-ss", f"{audio_start:.6f}", "-i", str(audio),
             "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
@@ -121,7 +139,8 @@ def effective_rise(rise: float, audio_start: float, t_intro: float, music_in: st
     return max(r, 0.0), notes
 
 
-def intro_audio_graph(lengths: Sequence[float], total: float, t_intro: float, rise: float) -> str:
+def intro_audio_graph(lengths: Sequence[float], total: float, t_intro: float, rise: float,
+                      fade: float = FADE) -> str:
     """Audio part of the final filtergraph -> [a]. Input 1 = song (already seeked to
     audio_start - rise), inputs 2.. = one per intro region. rise == 0 means `drop`."""
     parts = []
@@ -144,15 +163,16 @@ def intro_audio_graph(lengths: Sequence[float], total: float, t_intro: float, ri
     parts.append(f"[1:a]atrim=duration={music_len + rise:.6f},asetpts=PTS-STARTPTS,{AUDIO_FMT},"
                  f"{vol}adelay={round(delay * 44100)}S|{round(delay * 44100)}S[mus]")
     parts.append(f"[dlg][mus]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.95,"
-                 f"afade=t=out:st={max(total - FADE, 0):.6f}:d={FADE}[a]")
+                 f"afade=t=out:st={max(total - fade, 0):.6f}:d={fade}[a]")
     return ";".join(parts)
 
 
 def final_args_intro(listfile: Path, audio: Path, audio_start: float, total: float, fps: int,
-                     ass: Optional[Path], out: Path, intro: IntroAudio, t_intro: float) -> List[str]:
+                     ass: Optional[Path], out: Path, intro: IntroAudio, t_intro: float,
+                     fade: float = FADE) -> List[str]:
     rise, _ = effective_rise(intro.rise, audio_start, t_intro, intro.music_in)
     lengths = [L for _, _, L in intro.regions]
-    fc = _video_chain(ass) + ";" + intro_audio_graph(lengths, total, t_intro, rise)
+    fc = _video_chain(ass) + ";" + intro_audio_graph(lengths, total, t_intro, rise, fade)
     args = ["-y", "-f", "concat", "-safe", "0", "-i", str(listfile),
             "-ss", f"{audio_start - rise:.6f}", "-i", str(audio)]
     for src, st, L in intro.regions:
@@ -168,7 +188,7 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
            audio: Path, audio_start: float, subs: Optional[Path], out: Path,
            workers: Optional[int] = None, fit: str = "crop", sub_style: str = "pop",
            word_reveal: bool = False, intro: Optional[IntroAudio] = None,
-           punch_zoom: float = PUNCH_ZOOM) -> None:
+           punch_zoom: float = PUNCH_ZOOM, loop: bool = False) -> None:
     workers = workers or max(1, (os.cpu_count() or 2) // 2)
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -180,8 +200,12 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
         def job(i: int) -> None:
             a = assignments[i]
             sh = plan.shots[i]
+            blend = None
+            if loop and i == len(segs) - 1 and len(segs) > 1:
+                a0 = assignments[0]
+                blend = (sources[a0.source].path, a0.start)
             run_ffmpeg(segment_args(sources[a.source].path, a, sh.frames, plan.fps, segs[i],
-                                    fit, sh.punch, sh.flash, punch_zoom))
+                                    fit, sh.punch, sh.flash, punch_zoom, blend))
 
         print(f"rendering {len(segs)} shots with {workers} workers...", file=sys.stderr)
         with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -190,11 +214,13 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
         lst = tmpd / "list.txt"
         lst.write_text("".join(concat_line(s) for s in segs), encoding="utf-8")
         print("final pass...", file=sys.stderr)
+        fade = LOOP_FADE if loop else FADE
         if intro:
             for note in effective_rise(intro.rise, audio_start, plan.t_intro, intro.music_in)[1]:
                 print(note, file=sys.stderr)
             run_ffmpeg(final_args_intro(lst, Path(audio).resolve(), audio_start, plan.output_len,
-                                        plan.fps, ass, out.resolve(), intro, plan.t_intro))
+                                        plan.fps, ass, out.resolve(), intro, plan.t_intro,
+                                        fade))
         else:
             run_ffmpeg(final_args(lst, Path(audio).resolve(), audio_start, plan.output_len,
-                                  plan.fps, ass, out.resolve()))
+                                  plan.fps, ass, out.resolve(), fade))
