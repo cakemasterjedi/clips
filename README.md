@@ -32,6 +32,7 @@ Audio is loudness-normalized to -14 LUFS (true peak -1.5 dB) in two passes after
 ## Look options (all off/default unless given)
 
 - `--fit crop|letterbox|blur`: how non-9:16 footage fills 1080x1920 (default crop; blur = darkened blurred backdrop).
+- `--fit track`: the 9:16 crop follows the action (motion centroid of each shot, linear pan from where it is in the first third to where it is in the last third) instead of the centre.
 - `--sub-style pop|glow|top` (.srt only): `pop` default; `glow` = centered uppercase serif with an orange glow; `top` = plain white caption above a letterboxed 16:9 frame (use with `--fit letterbox`).
 - `--word-reveal` (.srt only): words appear one by one inside each cue.
 - `--smart-pick`: instead of walking each clip in order, score all footage (motion + sharpness, local DSP) and give the best windows to the opening shot first, then to the strongest beat hits. Black, blank/blurry, frozen footage and windows containing a cut inside the clip are avoided; windows never overlap and neighbouring shots come from different clips when possible.
@@ -74,4 +75,11 @@ Audio is loudness-normalized to -14 LUFS (true peak -1.5 dB) in two passes after
 - The profile is plain JSON (`pacing`, `fx`, `fit`, `intro`, `music`, plus per-video `refs`);
   edit it by hand if a value looks off. Captions are not learned.
 - Reference videos are third-party media: keep them out of the repo.
+
+## 360 / Insta360 footage
+
+- Native Insta360 `.insv` files work directly: put them in the input folder (or pass one). All three layouts are handled: both lenses side by side in one stream, one stream per lens, or one file per lens (`VID_..._00_NNN.insv` + `VID_..._10_NNN.insv`; the `_10_` file is read together with its `_00_` partner). Exported 360 MP4s (equirectangular, detected from their 360 metadata or a 2:1 frame of at least 3840 wide) work too.
+- Each shot is reframed to a flat 1080x1920 view with FFmpeg `v360`. The view follows the motion in that shot (yaw from where the most movement is, pitch capped at +-30 deg). `--yaw DEG [--pitch DEG]` fixes the view, `--fov DEG` sets the horizontal field of view (default 60). `--360 auto|off|equirect|dfisheye` overrides detection.
+- Quality vs Insta360 Studio: `.insv` is stitched with a generic 200 deg fisheye model, with no per-camera lens calibration, no seam blending, no FlowState stabilization and no horizon levelling (those need Insta360's software and gyro data). The auto view keeps away from the lens seams (yaw +-90), but a view pointed at a seam can show a visible line. For best quality, export a 360 MP4 from Insta360 Studio and use that.
+- `--dry-run` reports `view` per shot (kind, lenses, yaw, pitch, fov, or the track for `--fit track`).
 

@@ -9,7 +9,7 @@ from typing import List, Optional, Sequence
 
 from .ffmpeg import ClipsError, probe
 
-VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".insv"}
 END_MARGIN = 0.04  # seconds kept free at the end of a source so -frames:v never runs dry
 
 
@@ -17,6 +17,9 @@ END_MARGIN = 0.04  # seconds kept free at the end of a source so -frames:v never
 class Source:
     path: Path
     duration: float
+    width: int = 0
+    height: int = 0
+    info: object = None       # ProbeInfo, for 360 detection
 
 
 @dataclass
@@ -29,8 +32,11 @@ class Assignment:
 def discover(inp) -> List[Source]:
     p = Path(inp)
     if p.is_dir():
-        files = sorted((f for f in p.iterdir() if f.is_file() and f.suffix.lower() in VIDEO_EXTS),
-                       key=lambda f: f.name)
+        from .reframe import is_pair_secondary
+
+        # an Insta360 _10_ lens file is read together with its _00_ partner, not on its own
+        files = sorted((f for f in p.iterdir() if f.is_file() and f.suffix.lower() in VIDEO_EXTS
+                        and not is_pair_secondary(f)), key=lambda f: f.name)
         if not files:
             raise ClipsError(f"no video files ({', '.join(sorted(VIDEO_EXTS))}) in {p}")
     elif p.is_file():
@@ -43,7 +49,7 @@ def discover(inp) -> List[Source]:
         if not info.has_video or not info.duration or info.duration <= 0:
             print(f"warning: skipping {f.name}: no usable video stream", file=sys.stderr)
             continue
-        out.append(Source(f.resolve(), info.duration))
+        out.append(Source(f.resolve(), info.duration, info.width or 0, info.height or 0, info))
     if not out:
         raise ClipsError(f"no usable video in {p}")
     return out

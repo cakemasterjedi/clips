@@ -49,10 +49,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="skip the two-pass loudness normalization to -14 LUFS")
     p.add_argument("--export-edl", metavar="FILE.edl",
                    help="also write the cut plan as a CMX3600 EDL for Resolve / Premiere")
+    p.add_argument("--360", dest="mode360", choices=("auto", "off", "equirect", "dfisheye"),
+                   default="auto", help="360 footage: auto = .insv as Insta360 dual fisheye, "
+                   "files with 360 metadata as equirectangular (default auto)")
+    p.add_argument("--yaw", type=float, help="360 view direction in degrees (default: follow motion)")
+    p.add_argument("--pitch", type=float, default=0.0, help="360 view pitch in degrees (with --yaw)")
+    p.add_argument("--fov", type=float, default=60.0, help="360 view horizontal field of view (deg)")
     p.add_argument("--smart-pick", action="store_true",
                    help="give the busiest, sharpest footage to the opening shot and strongest hits")
     p.add_argument("--seed", type=int)
-    p.add_argument("--fit", choices=("crop", "letterbox", "blur"), default=None,
+    p.add_argument("--fit", choices=("crop", "letterbox", "blur", "track"), default=None,
                    help="how to fit non-9:16 footage (default crop)")
     p.add_argument("--sub-style", choices=("pop", "glow", "top"), default="pop",
                    help="caption style for .srt input (default pop)")
@@ -119,6 +125,43 @@ def apply_style(args) -> dict:
         if getattr(args, k) is None:
             setattr(args, k, v)
     return knobs
+
+
+def build_views(args, plan, sources, assigns):
+    """Per-shot View for 360 sources (reframed) and for --fit track; None when neither applies."""
+    from . import reframe
+
+    base = {}
+    for a in assigns:
+        s = sources[a.source]
+        if a.source not in base:
+            base[a.source] = reframe.detect_view(s.path, s.info or probe(s.path), args.mode360)
+    if args.fit != "track" and not any(v.is360 for v in base.values()):
+        return None
+    if args.fov <= 0 or args.fov >= 180:
+        raise ClipsError("--fov must be between 0 and 180")
+    views = []
+    for sh, a in zip(plan.shots, assigns):
+        s, v = sources[a.source], base[a.source]
+        if v.is360:
+            v = reframe.View(v.kind, v.lenses, v.pair, fov=args.fov)
+            if args.yaw is not None:
+                v.yaw, v.pitch = args.yaw, args.pitch
+            else:
+                v = reframe.auto_view(s.path, v, a.start, sh.length)
+        elif args.fit == "track":
+            info = s.info or probe(s.path)
+            v = reframe.track_view(s.path, a.start, sh.length, info.width or 1080, info.height or 1920)
+        views.append(v)
+    return views
+
+
+def view_dict(v):
+    if v is None:
+        return None
+    if v.is360:
+        return {"kind": v.kind, "lenses": v.lenses, "yaw": v.yaw, "pitch": v.pitch, "fov": v.fov}
+    return {"kind": "flat", "track": list(v.track) if v.track else None}
 
 
 def variant_args(args, k: int):
@@ -235,6 +278,7 @@ def run(args) -> int:
             intro_assigns.append(src_mod.Assignment(idx, r.start))
         plan = audio_mod.compose_plan(ifr, plan)
     assigns = intro_assigns + music_assigns
+    views = build_views(args, plan, all_sources, assigns)
     if args.export_edl:
         from .export import build_edl
 
@@ -250,8 +294,9 @@ def run(args) -> int:
                   "end": round(s.end, 4), "frames": s.frames,
                   "source": str(all_sources[a.source].path), "source_start": a.start,
                   "energy": s.energy, "loop": a.loop,
-                  "hit": s.hit, "punch": s.punch, "flash": s.flash, "ramp": s.ramp}
-                 for s, a in zip(plan.shots, assigns)]
+                  "hit": s.hit, "punch": s.punch, "flash": s.flash, "ramp": s.ramp,
+                  "view": view_dict(v)}
+                 for s, a, v in zip(plan.shots, assigns, views or [None] * len(assigns))]
         doc = {"intro": [r.to_dict() for r in regions],
                "candidates": [r.to_dict() for r in candidates],
                "audio_start": round(audio_start, 4),
@@ -277,7 +322,7 @@ def run(args) -> int:
     render(plan, all_sources, assigns, Path(args.audio), audio_start, args.subs,
            Path(args.output), fit=args.fit, sub_style=args.sub_style,
            word_reveal=args.word_reveal, intro=ia,
-           loop=args.loop, preview=args.preview, loudnorm=not args.no_loudnorm,
+           loop=args.loop, preview=args.preview, loudnorm=not args.no_loudnorm, views=views,
            **({"punch_zoom": knobs["punch_zoom"]} if knobs["punch_zoom"] else {}))
     print(f"wrote {args.output}", file=sys.stderr)
     return 0

@@ -12,6 +12,7 @@ from typing import List, Optional, Sequence, Tuple
 from .audio import Plan
 from .ffmpeg import run_ffmpeg
 from .sources import Assignment, Source
+from .reframe import View, input_labels, track_crop, view_graph
 from .subs import escape_filter_path, prepare_subs
 
 FADE = 0.3
@@ -31,9 +32,17 @@ FLASH_DUR = 0.1
 
 
 def fit_graph(fit: str, fps: int, inp: str = "0:v", out: str = "f",
-              size: Tuple[int, int] = (1080, 1920)) -> str:
-    """Filter graph from [inp] to [out] producing exactly `size` (1080x1920) for the fit mode."""
+              size: Tuple[int, int] = (1080, 1920), view: Optional[View] = None,
+              inp2: Optional[str] = None, length: float = 0.0) -> str:
+    """Filter graph from [inp] to [out] producing exactly `size` (1080x1920) for the fit mode.
+    360 sources (view.is360) are reframed with v360 instead (fit does not apply); `track`
+    pans the crop along view.track; inp2 = the second lens of a split dual-fisheye source."""
     W, H = size
+    if view is not None and view.is360:
+        return view_graph(view, fps, inp, inp2, out, size)
+    if fit == "track":
+        return (f"[{inp}]fps={fps},scale={W}:{H}:force_original_aspect_ratio=increase,"
+                f"{track_crop(view, length, size)}[{out}]")
     if fit == "crop":
         return (f"[{inp}]fps={fps},scale={W}:{H}:force_original_aspect_ratio=increase,"
                 f"crop={W}:{H}[{out}]")
@@ -53,13 +62,16 @@ def fit_graph(fit: str, fps: int, inp: str = "0:v", out: str = "f",
 def segment_filter(fit: str, fps: int, punch: bool = False, flash: bool = False,
                    punch_zoom: float = PUNCH_ZOOM, blend_at: Optional[float] = None,
                    size: Tuple[int, int] = (1080, 1920),
-                   ramp_len: Optional[float] = None, preview: bool = False) -> str:
+                   ramp_len: Optional[float] = None, preview: bool = False,
+                   view: Optional[View] = None, blend_view: Optional[View] = None,
+                   length: float = 0.0) -> str:
     """Complete -filter_complex for one shot, output label [v]. blend_at (loop ending): from
     that time on, the first frame of input 1 (the opening shot) fades in over the shot.
     ramp_len (shot length in s): the last min(RAMP_DUR, len/2) s play at RAMP_SPEED, frame
     blended up to fps (plain frame repeats in preview)."""
     W, H = size
-    g = fit_graph(fit, fps, size=size)
+    inp, inp2 = input_labels(view or View(), 0)
+    g = fit_graph(fit, fps, inp, "f", size, view, inp2, length)
     last = "f"
     if ramp_len is not None:
         r = min(RAMP_DUR, ramp_len / 2)
@@ -71,7 +83,9 @@ def segment_filter(fit: str, fps: int, punch: bool = False, flash: bool = False,
               f"[rn][rs]concat=n=2:v=1:a=0,fps={fps}[rr]")
         last = "rr"
     if blend_at is not None:
-        g += (";" + fit_graph(fit, fps, "1:v", "l0", size) +
+        bidx = 2 if view is not None and view.lenses == "pair" else 1
+        b1, b2 = input_labels(blend_view or View(), bidx)
+        g += (";" + fit_graph(fit, fps, b1, "l0", size, blend_view, b2, LOOP_BLEND) +
               f";[l0]trim=end_frame=1,loop=loop=-1:size=1,setpts=N/{fps}/TB,format=yuva420p,"
               f"fade=t=in:st={blend_at:.6f}:d={LOOP_BLEND:.6f}:alpha=1[l1];"
               f"[{last}][l1]overlay=shortest=1:format=auto[fb]")
@@ -93,19 +107,24 @@ def segment_args(src: Path, a: Assignment, frames: int, fps: int, out: Path,
                  fit: str = "crop", punch: bool = False, flash: bool = False,
                  punch_zoom: float = PUNCH_ZOOM,
                  blend_to: Optional[Tuple[Path, float]] = None, preview: bool = False,
-                 ramp: bool = False) -> List[str]:
+                 ramp: bool = False, view: Optional[View] = None,
+                 blend_view: Optional[View] = None) -> List[str]:
     args = ["-y"]
-    if a.loop:
-        args += ["-stream_loop", "-1"]
-    args += ["-ss", f"{a.start:.6f}", "-i", str(src)]
+    loop = ["-stream_loop", "-1"] if a.loop else []
+    args += loop + ["-ss", f"{a.start:.6f}", "-i", str(src)]
+    if view is not None and view.lenses == "pair" and view.pair is not None:
+        args += loop + ["-ss", f"{a.start:.6f}", "-i", str(view.pair)]
     blend_at = None
     if blend_to is not None:
         args += ["-ss", f"{blend_to[1]:.6f}", "-i", str(blend_to[0])]
+        if blend_view is not None and blend_view.lenses == "pair" and blend_view.pair is not None:
+            args += ["-ss", f"{blend_to[1]:.6f}", "-i", str(blend_view.pair)]
         blend_at = max(frames / fps - LOOP_BLEND, 0.0)
     args += ["-frames:v", str(frames), "-an",
              "-filter_complex", segment_filter(fit, fps, punch, flash, punch_zoom, blend_at,
                                                PREVIEW_SIZE if preview else (1080, 1920),
-                                               frames / fps if ramp else None, preview),
+                                               frames / fps if ramp else None, preview,
+                                               view, blend_view, frames / fps),
              "-map", "[v]",
              "-c:v", "libx264", *(PREVIEW_X264 if preview else ["-preset", "veryfast", "-crf", "18"]),
              "-r", str(fps), str(out)]
@@ -272,7 +291,7 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
            workers: Optional[int] = None, fit: str = "crop", sub_style: str = "pop",
            word_reveal: bool = False, intro: Optional[IntroAudio] = None,
            punch_zoom: float = PUNCH_ZOOM, loop: bool = False, preview: bool = False,
-           loudnorm: bool = True) -> None:
+           loudnorm: bool = True, views: Optional[Sequence[Optional[View]]] = None) -> None:
     workers = workers or max(1, (os.cpu_count() or 2) // 2)
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -288,9 +307,10 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
             if loop and i == len(segs) - 1 and len(segs) > 1:
                 a0 = assignments[0]
                 blend = (sources[a0.source].path, a0.start)
+            vw = views[i] if views else None
             run_ffmpeg(segment_args(sources[a.source].path, a, sh.frames, plan.fps, segs[i],
                                     fit, sh.punch, sh.flash, punch_zoom, blend, preview,
-                                    sh.ramp))
+                                    sh.ramp, vw, views[0] if views and blend else None))
 
         print(f"rendering {len(segs)} shots with {workers} workers...", file=sys.stderr)
         with ThreadPoolExecutor(max_workers=workers) as ex:
