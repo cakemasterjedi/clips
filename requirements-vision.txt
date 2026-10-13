@@ -1,0 +1,4 @@
+# Optional: --subject (local subject detection). CPU build; for a GPU use instead
+#   Windows (any GPU, incl. AMD Radeon): onnxruntime-directml
+#   Linux AMD with ROCm + MIGraphX:      onnxruntime-migraphx
+onnxruntime>=1.17
