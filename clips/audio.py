@@ -130,6 +130,72 @@ def analyze(path, audio_start: float, length: float) -> Analysis:
 
 HIT_WINDOW = 0.04
 
+# ---------------------------------------------------------------- auto song section
+AUTO_WINDOW = 20.0       # scored window when --duration is not given (s)
+DROP_PRE = 4.0           # look-back before a candidate start for the drop contrast (s)
+DROP_POST = 2.0          # look-ahead after a candidate start for the drop contrast (s)
+DROP_WEIGHT = 1.0
+ONSET_WEIGHT = 0.5
+
+
+def _mean_between(x: np.ndarray, t: np.ndarray, a: float, b: float) -> Optional[float]:
+    m = (t >= a) & (t < b)
+    return float(x[m].mean()) if m.any() else None
+
+
+def section_scores(candidates: Sequence[float], window: float, rms: np.ndarray,
+                   rms_times: np.ndarray, env: np.ndarray, env_times: np.ndarray) -> np.ndarray:
+    """Score each candidate start t for a `window`-second excerpt:
+    mean RMS in [t, t+window] + ONSET_WEIGHT * mean onset strength there
+    + DROP_WEIGHT * max(0, RMS just after t - RMS just before t).
+    RMS and onset strength are normalized by their maxima over the whole song. The drop term
+    rewards starting right where the song gets louder; at the song start (nothing before t)
+    it is 0."""
+    r = rms / rms.max() if rms.size and rms.max() > 0 else np.zeros_like(rms)
+    e = env / env.max() if env.size and env.max() > 0 else np.zeros_like(env)
+    out = np.zeros(len(candidates))
+    for i, t in enumerate(candidates):
+        body = _mean_between(r, rms_times, t, t + window) or 0.0
+        hits = _mean_between(e, env_times, t, t + window) or 0.0
+        pre = _mean_between(r, rms_times, t - DROP_PRE, t)
+        post = _mean_between(r, rms_times, t, t + min(DROP_POST, window))
+        drop = max(0.0, post - pre) if pre is not None and post is not None else 0.0
+        out[i] = body + ONSET_WEIGHT * hits + DROP_WEIGHT * drop
+    return out
+
+
+def pick_section(window: float, song_len: float, beats: np.ndarray, rms: np.ndarray,
+                 rms_times: np.ndarray, env: np.ndarray, env_times: np.ndarray
+                 ) -> Tuple[float, List[Tuple[float, float]]]:
+    """Best start (on a detected beat, or 0) for a `window`-second excerpt that fits the song.
+    Returns (start, top candidates as (start, score), best first). Ties go to the earlier start."""
+    latest = song_len - window
+    if latest <= 0:
+        return 0.0, [(0.0, 0.0)]
+    cands = np.unique(np.concatenate([[0.0], np.asarray(beats, float)]))
+    cands = cands[(cands >= 0) & (cands <= latest + 1e-6)]
+    scores = section_scores(cands, window, rms, rms_times, env, env_times)
+    order = sorted(range(cands.size), key=lambda i: (-round(scores[i], 6), cands[i]))
+    top = [(round(float(cands[i]), 3), round(float(scores[i]), 4)) for i in order[:5]]
+    return float(cands[order[0]]), top
+
+
+def auto_audio_start(path, window: float) -> Tuple[float, List[Tuple[float, float]]]:
+    """Analyse the whole song and pick where the `window`-second excerpt should start."""
+    import librosa
+
+    y = decode(path)
+    if y.size == 0:
+        raise ClipsError(f"audio contains no samples: {path}")
+    song_len = y.size / SR
+    env = librosa.onset.onset_strength(y=y, sr=SR, hop_length=HOP)
+    _, beat_frames = librosa.beat.beat_track(onset_envelope=env, sr=SR, hop_length=HOP)
+    beats = librosa.frames_to_time(beat_frames, sr=SR, hop_length=HOP)
+    rms = librosa.feature.rms(y=y, hop_length=HOP)[0]
+    rms_times = librosa.frames_to_time(np.arange(rms.size), sr=SR, hop_length=HOP)
+    env_times = librosa.frames_to_time(np.arange(env.size), sr=SR, hop_length=HOP)
+    return pick_section(window, song_len, beats, rms, rms_times, np.asarray(env, float), env_times)
+
 
 # ---------------------------------------------------------------- energy
 def interval_energy(boundaries: Sequence[float], rms: np.ndarray, rms_times: np.ndarray,

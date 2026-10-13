@@ -4,13 +4,18 @@ Local CLI that cuts source video on the beat of a music track (librosa) and burn
 user-provided subtitles (FFmpeg). Output: 1080x1920, H.264 + AAC, 30 fps (or 60).
 
     .venv/bin/python -m clips INPUT --audio SONG [--subs FILE.srt|.ass] -o OUT.mp4 \
-        [--fps 30|60] [--beats-per-cut N] [--duration S] [--audio-start S] \
+        [--fps 30|60] [--beats-per-cut N] [--duration S] [--audio-start S|auto] \
         [--shuffle] [--seed N] [--dry-run]
 
 - INPUT: a video file, or a directory of clips (non-recursive; mp4 mov mkv webm avi m4v).
 - Default cut density is automatic and energy-adaptive (louder = faster cuts, up to every
   beat plus strong onsets; quiet = ~1.6 s shots). `--beats-per-cut N` cuts every N beats.
 - Shots are 0.25 s to 2.0 s. Cuts are snapped to the frame grid; frame counts sum exactly.
+- `--audio-start auto` picks where the song starts: the beat that opens the most energetic
+  window of the output's music length (`--duration` minus the intro; 20 s if no `--duration`),
+  with a bonus for starting right on a drop (RMS jump vs the 4 s before). Local librosa only.
+  The pick is printed on stderr; `--dry-run` reports `audio_start` and the top 5
+  `audio_start_candidates`. With `--music-in rise` the rise plays the build-up before the drop.
 - `--dry-run` prints the cut plan as JSON (shots: index, section, start, end, frames, source, source_start, energy, hit, punch, flash; see the intro section below).
 - Subtitles: `.ass` is burned as-is; `.srt` is converted to a styled ASS with a pop-in effect.
   **Subtitle times are relative to the output video and are NOT shifted by `--audio-start`.**
