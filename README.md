@@ -9,8 +9,6 @@ Everything runs on your machine; no paid APIs.
     git clone https://github.com/cakemasterjedi/clips && cd clips
     ./install.sh              # ffmpeg check, .venv, requirements, `clips` command in ~/.local/bin
     ./install.sh --vision     # optional: --subject (local object detector, CPU)
-    ./install.sh --ollama     # optional: --subject-desc (Ollama + qwen2.5vl, ~6 GB; sets the RX 6700 XT override)
-    ./install.sh --all        # both optional parts
 
 Needs Python 3.10+. If ffmpeg is missing it tries your package manager (may ask for your
 password) and otherwise falls back to a bundled build. Re-running is safe.
@@ -136,7 +134,7 @@ Instead of the area with the most motion, the framer follows a subject found by 
 **Which one, in words** (`--subject-desc`): when several people are in view, describe the one to follow and a local vision model in [Ollama](https://ollama.com) picks it:
 
 ```
-./install.sh --ollama                                      # once; or `ollama pull qwen2.5vl` (~6 GB)
+ollama pull qwen2.5vl                                      # once, in your own Ollama install; ~6 GB
 clips autoframe CLIPS_FOLDER --subject-desc "the guy in the red jacket"
 clips CLIPS_FOLDER --audio song.mp3 --subject dog --subject-desc "the small white dog" -o out.mp4
 ```

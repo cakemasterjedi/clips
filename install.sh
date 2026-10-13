@@ -2,19 +2,15 @@
 # One-command setup for clips on Linux.
 #   ./install.sh                 core: ffmpeg check, .venv, requirements, `clips` command
 #   ./install.sh --vision        + local subject detection (--subject, ONNX Runtime, CPU)
-#   ./install.sh --ollama        + Ollama and the qwen2.5vl model (--subject-desc, ~6 GB)
-#   ./install.sh --all           both
 set -euo pipefail
 
 cd "$(dirname "$0")"
 REPO=$(pwd)
-VISION=0; OLLAMA=0
+VISION=0
 for a in "$@"; do
   case "$a" in
     --vision) VISION=1 ;;
-    --ollama) OLLAMA=1 ;;
-    --all) VISION=1; OLLAMA=1 ;;
-    -h|--help) sed -n 2,7p "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n 2,5p "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $a (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -63,23 +59,6 @@ say "Installing requirements"
 if [ "$VISION" = 1 ]; then
   say "Installing vision extras (CPU ONNX Runtime)"
   .venv/bin/python -m pip install -q -r requirements-vision.txt
-fi
-
-if [ "$OLLAMA" = 1 ]; then
-  say "Setting up Ollama"
-  if ! command -v ollama >/dev/null; then
-    curl -fsSL https://ollama.com/install.sh | sh   # picks the ROCm build on AMD GPUs
-  fi
-  # RX 6700 XT (gfx1031) is not on ROCm's list; tell Ollama to treat it as gfx1030.
-  if command -v lspci >/dev/null && lspci | grep -Eqi 'VGA.*(Navi 22|6700|6750)'; then
-    if command -v systemctl >/dev/null && systemctl list-unit-files ollama.service >/dev/null 2>&1; then
-      $SUDO mkdir -p /etc/systemd/system/ollama.service.d
-      printf '[Service]\nEnvironment="HSA_OVERRIDE_GFX_VERSION=10.3.0"\n' \
-        | $SUDO tee /etc/systemd/system/ollama.service.d/gfx.conf >/dev/null
-      $SUDO systemctl daemon-reload && $SUDO systemctl restart ollama
-    fi
-  fi
-  ollama pull qwen2.5vl
 fi
 
 # 4. Put `clips` on PATH
