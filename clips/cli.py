@@ -420,6 +420,9 @@ def build_ui_parser() -> argparse.ArgumentParser:
     p.add_argument("--workdir", default=str(ui.DEFAULT_WORKDIR),
                    help=f"where renders/ and profiles/ go (default {ui.DEFAULT_WORKDIR})")
     p.add_argument("--port", type=int, default=8361, help="local port (default 8361)")
+    p.add_argument("--host", default="127.0.0.1",
+                   help="address to listen on (default 127.0.0.1, this PC only); 0.0.0.0 lets "
+                        "phones and other computers on your network open the page")
     p.add_argument("--no-browser", action="store_true", help="do not open the browser")
     return p
 

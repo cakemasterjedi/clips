@@ -218,3 +218,17 @@ def test_page_in_browser(tmp_path, media):
         assert not errors
     finally:
         srv.shutdown()
+
+
+def test_lan_host(tmp_path):
+    srv = ui.serve(tmp_path / "work", 0, False, host="0.0.0.0")
+    try:
+        assert not srv.local_only and srv.lan_urls()
+        assert req(srv, "GET", "/api/state", headers={"Host": "192.168.1.20:8361"})[0] == 200
+    finally:
+        srv.shutdown()
+    srv = ui.serve(tmp_path / "work", 0, False)
+    try:
+        assert srv.local_only and srv.lan_urls() == []
+    finally:
+        srv.shutdown()

@@ -38,8 +38,10 @@ Render. Renders queue and run one at a time with a live progress bar and log; fi
 play in the page and can be downloaded. You can also learn a creator style from links (it
 shows up in the style list when done) and open `clips frame` on a 360 clip. Renders and
 styles are kept in `~/Videos/clips` (`--workdir` to change, `--port`, `--no-browser`).
-Anything without its own control goes in "Extra flags". The page only listens on this
-machine.
+Anything without its own control goes in "Extra flags". Keep the terminal open while you use
+the page. It only answers on this PC; to open it from a phone or another computer on your
+network run `clips ui --host 0.0.0.0` and use the address it prints (anyone on the network can
+then use it, and the 360 framing tool still opens on this PC only).
 
 ## Usage
 
