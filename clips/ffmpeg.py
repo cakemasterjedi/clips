@@ -1,9 +1,12 @@
 """FFmpeg binary resolution, subprocess helper and a stderr-based probe."""
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
+import sys
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional, Sequence
@@ -26,11 +29,28 @@ def ffmpeg_exe() -> str:
         raise ClipsError(f"no ffmpeg found on PATH or via imageio-ffmpeg: {exc}")
 
 
+def verbose() -> bool:
+    return os.environ.get("CLIPS_VERBOSE", "") not in ("", "0")
+
+
+def vlog(msg: str) -> None:
+    """Detail line for `clips ui`'s advanced log (CLIPS_VERBOSE=1); silent otherwise."""
+    if verbose():
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+
+
 def run_ffmpeg(args: Sequence[str], tail_lines: int = 25) -> subprocess.CompletedProcess:
     """Run ffmpeg with args; raise ClipsError with the stderr tail on failure."""
     cmd = [ffmpeg_exe(), "-nostdin", "-hide_banner", "-loglevel", "error", *map(str, args)]
+    t0 = time.time()
+    if verbose():
+        ins = [os.path.basename(str(args[i + 1])) for i, a in enumerate(args[:-1]) if a == "-i"]
+        vlog(f"ffmpeg start: {', '.join(ins) or '-'} -> {os.path.basename(str(args[-1]))}")
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                           errors="replace")
+    if verbose():
+        vlog(f"ffmpeg done in {time.time() - t0:.1f}s (exit {proc.returncode}): "
+             f"{os.path.basename(str(args[-1]))}")
     if proc.returncode != 0:
         tail = "\n".join(proc.stderr.strip().splitlines()[-tail_lines:])
         raise ClipsError(f"ffmpeg failed (exit {proc.returncode}): {' '.join(cmd)}\n{tail}")

@@ -49,7 +49,7 @@ from .frame import send_file
 PAGE = Path(__file__).with_name("ui.html")
 DEFAULT_WORKDIR = Path.home() / "Videos" / "clips"
 MAX_BODY = 1 << 20
-LOG_LINES = 400
+LOG_LINES = 5000
 
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".insv"}
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"}
@@ -64,7 +64,12 @@ FLAGS = {"smart_pick": "--smart-pick", "loop": "--loop", "ramp": "--ramp", "prev
 # text/select name -> flag (empty = left out)
 VALUES = {"duration": "--duration", "fps": "--fps", "fit": "--fit", "variations": "--variations",
           "subject": "--subject", "subject_desc": "--subject-desc", "sub_style": "--sub-style",
-          "seed": "--seed", "subs": "--subs", "style": "--style"}
+          "seed": "--seed", "style": "--style", "zoom": "--zoom", "bpm": "--bpm"}
+# flags with their own control on the page (left out of the "add an option" list)
+FORM_DESTS = {"input", "audio", "output", "help", "no_music", "mute", "audio_start", "subs",
+              "dry_run", *FLAGS, *VALUES}
+MAX_UPLOAD = 64 << 30
+LOG_SEND = 300              # newest log lines sent per job on each refresh
 
 
 def safe_name(name: str, default: str) -> str:
@@ -84,34 +89,71 @@ def parse_ok(parser: argparse.ArgumentParser, argv: List[str]) -> None:
         raise ClipsError(msg[-1].split("error: ", 1)[-1] if msg else "invalid options") from None
 
 
+def option_list() -> List[dict]:
+    """Every `clips` option without its own control on the page, for the "add an option" menu."""
+    from .cli import build_parser
+
+    out = []
+    for act in build_parser()._actions:
+        if not act.option_strings or act.dest in FORM_DESTS:
+            continue
+        flag = max(act.option_strings, key=len)
+        kind = "bool" if act.nargs == 0 else ("choice" if act.choices else "value")
+        out.append({"flag": flag, "kind": kind, "help": (act.help or "").replace("%%", "%"),
+                    "choices": [str(c) for c in act.choices] if act.choices else None,
+                    "metavar": act.metavar or "", "repeat": isinstance(act.default, list)})
+    return sorted(out, key=lambda o: o["flag"])
+
+
 def render_argv(form: dict, renders: Path) -> List[str]:
     """`clips` arguments for a render form; validated with the real parser."""
     from .cli import build_parser
 
-    inp, song = str(form.get("input") or "").strip(), str(form.get("audio") or "").strip()
+    inp = str(form.get("input") or "").strip()
     if not inp or not Path(inp).exists():
         raise ClipsError("pick a footage folder or clip")
-    if not song or not Path(song).is_file():
-        raise ClipsError("pick a song")
+    music = form.get("music") or "file"
+    if music == "file":
+        song = str(form.get("audio") or "").strip()
+        if not song or not Path(song).is_file():
+            raise ClipsError("pick a song (or choose no song)")
+        sound = ["--audio", song]
+    else:
+        sound = ["--mute"] if music == "mute" else ["--no-music"]
     out = renders / f"{safe_name(form.get('name'), time.strftime('edit-%Y%m%d-%H%M%S'))}.mp4"
-    argv = [inp, "--audio", song, "-o", str(out)]
+    argv = [inp, *sound, "-o", str(out)]
     start = str(form.get("audio_start") or "").strip()
-    if start:
+    if start and music == "file":
         argv += ["--audio-start", start]
+    if form.get("captions") == "file":
+        subs = str(form.get("subs") or "").strip()
+        if not subs:
+            raise ClipsError("pick a caption file (or choose no captions)")
+        argv += ["--subs", subs]
     for key, flag in VALUES.items():
         v = form.get(key)
-        if v is None or str(v).strip() == "" or (key == "variations" and str(v) == "1"):
+        if v is None or str(v).strip() == "" or (key in ("variations", "zoom") and float(v or 1) == 1):
+            continue
+        if key == "bpm" and music == "file":
             continue
         argv += [flag, str(v).strip()]
     argv += [flag for key, flag in FLAGS.items() if form.get(key)]
-    extra = str(form.get("extra") or "").strip()
-    if extra:
+    extra = []
+    for item in form.get("options") or []:              # [flag, value] rows from the picker
+        if not isinstance(item, (list, tuple)) or not item or not str(item[0]).startswith("--"):
+            continue
+        extra.append(str(item[0]))
+        if len(item) > 1 and item[1] not in (None, True, ""):
+            extra.append(str(item[1]))
+    text = str(form.get("extra") or "").strip()
+    if text:
         try:
-            argv += shlex.split(extra)
+            extra += shlex.split(text)
         except ValueError as exc:
             raise ClipsError(f"extra flags: {exc}") from None
-    if any(a in ("-o", "--output") or a.startswith("--output=") for a in argv[5:]):
+    if any(a in ("-o", "--output") or a.startswith("--output=") for a in extra):
         raise ClipsError("set the output name in the name box, not with -o")
+    argv += extra
     parse_ok(build_parser(), argv)
     return argv
 
@@ -160,6 +202,50 @@ def progress_of(line: str, k: int, n: int, f: float):
     return k, f
 
 
+STAGES = [(r"^variation (\d+)/(\d+)", "variation {0}/{1}"),
+          (r"^analysing (.+)\.\.\.", "analysing {0}"),
+          (r"^downloading|\[download\]", "downloading"),
+          (r"^note: --audio-start auto", "picking the song section"),
+          (r"^auto-framed", "auto framing"),
+          (r"^mode=", "planning cuts"),
+          (r"^rendering (\d+) shots", "rendering {0} shots"),
+          (r"^shot (\d+)/(\d+)", "rendering shot {0}/{1}"),
+          (r"^final pass", "final pass (joining, captions, sound)"),
+          (r"^loudness", "loudness"),
+          (r"^building framing proxy", "building the 360 preview"),
+          (r"^framing .* at http", "framing tool ready"),
+          (r"^wrote ", "finished writing")]
+
+
+def stage_of(line: str) -> Optional[str]:
+    for pat, label in STAGES:
+        m = re.search(pat, line)
+        if m:
+            return label.format(*m.groups())
+    return None
+
+
+def group_cpu(pgid: int) -> Optional[float]:
+    """CPU seconds used so far by every process in a process group (Linux /proc), so the
+    page can show work is happening even when nothing is printed."""
+    try:
+        tick = os.sysconf("SC_CLK_TCK")
+        total = 0
+        for d in os.listdir("/proc"):
+            if not d.isdigit():
+                continue
+            try:
+                with open(f"/proc/{d}/stat", "rb") as fh:
+                    st = fh.read().rsplit(b")", 1)[1].split()
+            except OSError:
+                continue
+            if int(st[2]) == pgid:                       # fields after "(comm)": state ppid pgrp
+                total += int(st[11]) + int(st[12]) + int(st[13]) + int(st[14])
+        return total / tick
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
+
+
 class Job:
     _ids = itertools.count(1)
 
@@ -168,17 +254,28 @@ class Job:
         self.id = next(Job._ids)
         self.kind, self.argv, self.title, self.out, self.variations = kind, argv, title, out, variations
         self.status = "queued"
-        self.log: deque = deque(maxlen=LOG_LINES)
+        self.log: deque = deque(maxlen=LOG_LINES)        # (seq, seconds since start, line)
+        self.seq = 0
         self.progress, self.var_k, self.var_f = 0.0, 0, 0.0
         self.url: Optional[str] = None
         self.proc: Optional[subprocess.Popen] = None
-        self.created, self.ended = time.time(), None
+        self.created, self.started, self.ended = time.time(), None, None
+        self.last_line = None
+        self.stage = "waiting for the job before it" if kind != "frame" else "starting"
         self.cancelled = False
+        self.logfile: Optional[Path] = None
 
     def to_dict(self) -> dict:
+        now = time.time()
+        running = self.status == "running" and self.proc is not None
         return {"id": self.id, "kind": self.kind, "title": self.title, "status": self.status,
-                "progress": round(self.progress, 3), "url": self.url,
-                "command": "clips " + shlex.join(self.argv), "log": list(self.log)[-60:],
+                "progress": round(self.progress, 3), "url": self.url, "stage": self.stage,
+                "command": "clips " + shlex.join(self.argv),
+                "log": [list(x) for x in list(self.log)[-LOG_SEND:]], "seq": self.seq,
+                "elapsed": round(((self.ended or now) - self.started), 1) if self.started else 0,
+                "idle": round(now - (self.last_line or self.started or now), 1) if running else None,
+                "cpu": group_cpu(self.proc.pid) if running and hasattr(os, "killpg") else None,
+                "pid": self.proc.pid if self.proc else None,
                 "outputs": [p.name for p in outputs_of(self.out)] if self.out else [],
                 "created": self.created, "ended": self.ended}
 
@@ -234,14 +331,18 @@ class Jobs:
     def _run(self, job: Job):
         tmp = self.workdir / ".tmp" / str(job.id)       # render scratch, removed even on cancel
         tmp.mkdir(parents=True, exist_ok=True)
-        env = dict(os.environ, PYTHONUNBUFFERED="1", TMPDIR=str(tmp))
-        job.status = "running"
+        logs = self.workdir / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        job.logfile = logs / f"{time.strftime('%Y%m%d-%H%M%S')}-{job.id}-{safe_name(job.title, job.kind)}.log"
+        env = dict(os.environ, PYTHONUNBUFFERED="1", TMPDIR=str(tmp), CLIPS_VERBOSE="1")
+        job.status, job.started, job.stage = "running", time.time(), "starting"
+        self._line(job, "$ clips " + shlex.join(job.argv))
         try:
             job.proc = subprocess.Popen(self.cmd + job.argv, stdout=subprocess.PIPE,
                                         stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                         env=env, start_new_session=True)
         except OSError as exc:
-            job.log.append(f"error: {exc}")
+            self._line(job, f"error: {exc}")
             job.status, job.ended = "failed", time.time()
             shutil.rmtree(tmp, ignore_errors=True)
             return
@@ -259,18 +360,30 @@ class Jobs:
             self._line(job, buf.decode("utf-8", "replace").rstrip())
         code = job.proc.wait()
         shutil.rmtree(tmp, ignore_errors=True)
-        job.ended = time.time()
-        if job.cancelled:
-            job.status = "cancelled"
-        elif code == 0:
-            job.status, job.progress = "done", 1.0
-        else:
-            job.status = "failed"
+        ended = time.time()
+        status = "cancelled" if job.cancelled else "done" if code == 0 else "failed"
+        self._line(job, f"-- {status} (exit {code}) after {ended - job.started:.1f}s")
+        if status == "done":
+            job.progress = 1.0
+        job.stage, job.ended, job.status = status, ended, status      # status last: readers poll it
 
     def _line(self, job: Job, line: str):
         if not line:
             return
-        job.log.append(line)
+        now = time.time()
+        job.last_line = now
+        job.seq += 1
+        t = round(now - (job.started or now), 1)
+        job.log.append((job.seq, t, line))
+        if job.logfile:
+            try:
+                with open(job.logfile, "a", encoding="utf-8") as fh:
+                    fh.write(f"[{time.strftime('%H:%M:%S')} +{t:.1f}s] {line}\n")
+            except OSError:
+                pass
+        st = stage_of(line)
+        if st:
+            job.stage = st
         if job.kind == "render":
             job.var_k, job.var_f = progress_of(line, job.var_k, job.variations, job.var_f)
             job.progress = min(0.99, (job.var_k + job.var_f) / max(1, job.variations))
@@ -417,6 +530,13 @@ class Handler(BaseHTTPRequestHandler):
                                     "jobs": srv.jobs.snapshot()})
         if u.path == "/api/ls":
             return self._json(200, list_dir(q.get("path", ""), q.get("kind", "")))
+        if u.path == "/api/options":
+            return self._json(200, option_list())
+        if m := re.fullmatch(r"/api/jobs/(\d+)/log", u.path):
+            job = srv.jobs.get(int(m.group(1)))
+            if job is None or not job.logfile or not job.logfile.is_file():
+                return self._send(404, b"no log yet", "text/plain")
+            return self._send(200, job.logfile.read_bytes(), "text/plain; charset=utf-8")
         if u.path.startswith("/renders/"):
             name = Path(u.path[len("/renders/"):]).name
             f = srv.renders / name
@@ -430,6 +550,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_ok() or self.headers.get("X-Clips") != "1":
             return self._send(403, b"forbidden", "text/plain")
         n = int(self.headers.get("Content-Length") or 0)
+        if urlparse(self.path).path == "/api/upload":
+            return self._upload(n)
         if n < 0 or n > MAX_BODY:
             return self._json(400, {"error": "bad body"})
         try:
@@ -454,6 +576,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/frame":
                 argv = frame_argv(form)
                 job = srv.jobs.add(Job("frame", argv, f"frame {Path(argv[1]).name}"))
+            elif path == "/api/mkdir":
+                return self._json(200, make_folder(str(form.get("path") or ""),
+                                                   str(form.get("name") or "")))
             elif m := re.fullmatch(r"/api/jobs/(\d+)/cancel", path):
                 job = srv.jobs.get(int(m.group(1)))
                 if job is None:
@@ -464,6 +589,65 @@ class Handler(BaseHTTPRequestHandler):
         except ClipsError as exc:
             return self._json(400, {"error": str(exc)})
         self._json(200, job.to_dict())
+
+    def _upload(self, n: int):
+        """Raw file body (the page sends one file per request) into ?dir= as ?name=."""
+        q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+        try:
+            dest = upload_target(q.get("dir", ""), q.get("name", ""))
+        except ClipsError as exc:
+            return self._json(400, {"error": str(exc)})
+        if n <= 0 or n > MAX_UPLOAD:
+            return self._json(400, {"error": "empty or too large"})
+        part = dest.with_name("." + dest.name + ".part")
+        left = n
+        try:
+            with open(part, "wb") as fh:
+                while left > 0:
+                    chunk = self.rfile.read(min(1 << 20, left))
+                    if not chunk:
+                        raise OSError("upload interrupted")
+                    fh.write(chunk)
+                    left -= len(chunk)
+            os.replace(part, dest)
+        except OSError as exc:
+            part.unlink(missing_ok=True)
+            return self._json(400, {"error": str(exc)})
+        self._json(200, {"ok": True, "path": str(dest), "name": dest.name, "size": n})
+
+
+def upload_target(folder: str, name: str) -> Path:
+    """Where an uploaded file goes: inside an existing folder, plain file name, never
+    replacing a file (name-1.ext, name-2.ext ...)."""
+    d = Path(folder).expanduser()
+    if not folder or not d.is_dir():
+        raise ClipsError("pick a folder to upload into")
+    base = Path(name.replace("\\", "/")).name.strip().lstrip(".")
+    if not base:
+        raise ClipsError("bad file name")
+    dest = d / base
+    k = 1
+    while dest.exists():
+        dest = d / f"{Path(base).stem}-{k}{Path(base).suffix}"
+        k += 1
+    return dest
+
+
+def make_folder(parent: str, name: str) -> dict:
+    p = Path(parent).expanduser()
+    if not parent or not p.is_dir():
+        raise ClipsError("open a folder first")
+    name = name.strip()
+    if not name or name in (".", "..") or "/" in name or "\\" in name or name.startswith("."):
+        raise ClipsError("folder names cannot contain / or start with a dot")
+    new = p / name
+    try:
+        new.mkdir()
+    except FileExistsError:
+        raise ClipsError(f"{name} already exists") from None
+    except OSError as exc:
+        raise ClipsError(str(exc)) from None
+    return {"ok": True, "path": str(new.resolve())}
 
 
 def serve(workdir: Path = DEFAULT_WORKDIR, port: int = 8361, browser: bool = True,

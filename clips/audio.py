@@ -130,6 +130,18 @@ def analyze(path, audio_start: float, length: float) -> Analysis:
 
 
 HIT_WINDOW = 0.04
+NO_MUSIC_BPM = 120.0
+
+
+def grid_analysis(length: float, bpm: float = NO_MUSIC_BPM) -> Analysis:
+    """Stand-in analysis when there is no song (--no-music): a steady beat grid at `bpm`
+    with flat energy, so auto pacing gives even shots (about 1.6 s at 120 BPM)."""
+    if bpm <= 0:
+        raise ClipsError("--bpm must be > 0")
+    beats = np.arange(0.0, length, 60.0 / bpm)
+    t = np.arange(0.0, length + HOP / SR, HOP / SR)
+    return Analysis(length=length, tempo=float(bpm), beats=beats, strong_onsets=np.zeros(0),
+                    rms=np.full(t.size, 0.5), rms_times=t)
 
 # ---------------------------------------------------------------- auto song section
 AUTO_WINDOW = 20.0       # scored window when --duration is not given (s)
