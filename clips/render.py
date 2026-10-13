@@ -31,9 +31,25 @@ PUNCH_DUR = 0.18
 FLASH_DUR = 0.1
 
 
+def zoom_graph(z: float, fps: int, inp: str, out: str, size: Tuple[int, int]) -> str:
+    """Crop fit at zoom z: the clip scaled to z x the fill size, centred; below 1 the empty
+    area shows a blurred, darkened fill of the same clip."""
+    W, H = size
+    s = f"max({W}/iw,{H}/ih)*{z:g}"
+    fg = (f"scale=w='2*trunc(iw*{s}/2)':h='2*trunc(ih*{s}/2)',"
+          f"crop='min(iw,{W})':'min(ih,{H})'")
+    if z >= 1:
+        return f"[{inp}]fps={fps},{fg},scale={W}:{H}[{out}]"
+    p = "z" + out
+    return (f"[{inp}]fps={fps},split[{p}a][{p}b];"
+            f"[{p}a]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
+            f"gblur=sigma=30,eq=brightness=-0.08[{p}bg];[{p}b]{fg}[{p}fg];"
+            f"[{p}bg][{p}fg]overlay=(W-w)/2:(H-h)/2[{out}]")
+
+
 def fit_graph(fit: str, fps: int, inp: str = "0:v", out: str = "f",
               size: Tuple[int, int] = (1080, 1920), view: Optional[View] = None,
-              inp2: Optional[str] = None, length: float = 0.0) -> str:
+              inp2: Optional[str] = None, length: float = 0.0, zoom: float = 1.0) -> str:
     """Filter graph from [inp] to [out] producing exactly `size` (1080x1920) for the fit mode.
     360 sources (view.is360) are reframed with v360 instead (fit does not apply); `track`
     pans the crop along view.track; inp2 = the second lens of a split dual-fisheye source."""
@@ -43,6 +59,8 @@ def fit_graph(fit: str, fps: int, inp: str = "0:v", out: str = "f",
     if fit == "track":
         return (f"[{inp}]fps={fps},scale={W}:{H}:force_original_aspect_ratio=increase,"
                 f"{track_crop(view, length, size)}[{out}]")
+    if fit == "crop" and zoom != 1:
+        return zoom_graph(zoom, fps, inp, out, size)
     if fit == "crop":
         return (f"[{inp}]fps={fps},scale={W}:{H}:force_original_aspect_ratio=increase,"
                 f"crop={W}:{H}[{out}]")
@@ -64,14 +82,14 @@ def segment_filter(fit: str, fps: int, punch: bool = False, flash: bool = False,
                    size: Tuple[int, int] = (1080, 1920),
                    ramp_len: Optional[float] = None, preview: bool = False,
                    view: Optional[View] = None, blend_view: Optional[View] = None,
-                   length: float = 0.0) -> str:
+                   length: float = 0.0, zoom: float = 1.0) -> str:
     """Complete -filter_complex for one shot, output label [v]. blend_at (loop ending): from
     that time on, the first frame of input 1 (the opening shot) fades in over the shot.
     ramp_len (shot length in s): the last min(RAMP_DUR, len/2) s play at RAMP_SPEED, frame
     blended up to fps (plain frame repeats in preview)."""
     W, H = size
     inp, inp2 = input_labels(view or View(), 0)
-    g = fit_graph(fit, fps, inp, "f", size, view, inp2, length)
+    g = fit_graph(fit, fps, inp, "f", size, view, inp2, length, zoom)
     last = "f"
     if ramp_len is not None:
         r = min(RAMP_DUR, ramp_len / 2)
@@ -85,7 +103,7 @@ def segment_filter(fit: str, fps: int, punch: bool = False, flash: bool = False,
     if blend_at is not None:
         bidx = 2 if view is not None and view.lenses == "pair" else 1
         b1, b2 = input_labels(blend_view or View(), bidx)
-        g += (";" + fit_graph(fit, fps, b1, "l0", size, blend_view, b2, LOOP_BLEND) +
+        g += (";" + fit_graph(fit, fps, b1, "l0", size, blend_view, b2, LOOP_BLEND, zoom) +
               f";[l0]trim=end_frame=1,loop=loop=-1:size=1,setpts=N/{fps}/TB,format=yuva420p,"
               f"fade=t=in:st={blend_at:.6f}:d={LOOP_BLEND:.6f}:alpha=1[l1];"
               f"[{last}][l1]overlay=shortest=1:format=auto[fb]")
@@ -108,7 +126,7 @@ def segment_args(src: Path, a: Assignment, frames: int, fps: int, out: Path,
                  punch_zoom: float = PUNCH_ZOOM,
                  blend_to: Optional[Tuple[Path, float]] = None, preview: bool = False,
                  ramp: bool = False, view: Optional[View] = None,
-                 blend_view: Optional[View] = None) -> List[str]:
+                 blend_view: Optional[View] = None, zoom: float = 1.0) -> List[str]:
     args = ["-y"]
     loop = ["-stream_loop", "-1"] if a.loop else []
     args += loop + ["-ss", f"{a.start:.6f}", "-i", str(src)]
@@ -124,7 +142,7 @@ def segment_args(src: Path, a: Assignment, frames: int, fps: int, out: Path,
              "-filter_complex", segment_filter(fit, fps, punch, flash, punch_zoom, blend_at,
                                                PREVIEW_SIZE if preview else (1080, 1920),
                                                frames / fps if ramp else None, preview,
-                                               view, blend_view, frames / fps),
+                                               view, blend_view, frames / fps, zoom),
              "-map", "[v]",
              "-c:v", "libx264", *(PREVIEW_X264 if preview else ["-preset", "veryfast", "-crf", "18"]),
              "-r", str(fps), str(out)]
@@ -286,12 +304,43 @@ def final_args_intro(listfile: Path, audio: Path, audio_start: float, total: flo
     return args
 
 
+def clip_audio(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignment],
+               out: Path, mute: bool = False, rate: int = 48000) -> Path:
+    """Sound track for an edit without a song: each shot's own audio (silence for clips
+    without sound, or everything with mute), sample-exact per shot, as one WAV."""
+    from .ffmpeg import probe
+
+    out = Path(out)
+    has = {}
+    parts = []
+    for i, (sh, a) in enumerate(zip(plan.shots, assignments)):
+        n = round(sh.frames / plan.fps * rate)            # samples, so parts add up exactly
+        part = out.with_name(f"snd_{i:04d}.wav")
+        src = sources[a.source].path
+        if not mute and a.source not in has:
+            has[a.source] = bool((sources[a.source].info or probe(src)).has_audio)
+        if mute or not has[a.source]:
+            args = ["-y", "-f", "lavfi", "-i", f"anullsrc=r={rate}:cl=stereo"]
+        else:
+            args = ["-y", *(["-stream_loop", "-1"] if a.loop else []),
+                    "-ss", f"{a.start:.6f}", "-i", str(src), "-map", "0:a:0", "-vn"]
+        args += ["-af", f"aresample={rate},apad,atrim=end_sample={n}", "-ac", "2", "-ar", str(rate),
+                 "-c:a", "pcm_s16le", str(part)]
+        run_ffmpeg(args)
+        parts.append(part)
+    lst = out.with_name("snd_list.txt")
+    lst.write_text("".join(concat_line(p) for p in parts), encoding="utf-8")
+    run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(out)])
+    return out
+
+
 def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignment],
            audio: Path, audio_start: float, subs: Optional[Path], out: Path,
            workers: Optional[int] = None, fit: str = "crop", sub_style: str = "pop",
            word_reveal: bool = False, intro: Optional[IntroAudio] = None,
            punch_zoom: float = PUNCH_ZOOM, loop: bool = False, preview: bool = False,
-           loudnorm: bool = True, views: Optional[Sequence[Optional[View]]] = None) -> None:
+           loudnorm: bool = True, views: Optional[Sequence[Optional[View]]] = None,
+           zoom: float = 1.0) -> None:
     workers = workers or max(1, (os.cpu_count() or 2) // 2)
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -320,7 +369,7 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
             bv = still(views[0]) if views and blend and views[0] is not None else None
             run_ffmpeg(segment_args(sources[a.source].path, a, sh.frames, plan.fps, segs[i],
                                     fit, sh.punch, sh.flash, punch_zoom, blend, preview,
-                                    sh.ramp, vw, bv))
+                                    sh.ramp, vw, bv, zoom))
 
         print(f"rendering {len(segs)} shots with {workers} workers...", file=sys.stderr)
         with ThreadPoolExecutor(max_workers=workers) as ex:

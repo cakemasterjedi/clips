@@ -9,58 +9,74 @@
           --ok:#5fd38d; --bad:#ff6b6b; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, sans-serif; }
-  header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; }
+  header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
   header h1 { font-size:18px; margin:0; color:var(--accent); }
-  header span { color:var(--muted); font-size:12px; }
-  main { display:grid; grid-template-columns:minmax(320px, 520px) 1fr; gap:16px; padding:16px; }
-  @media (max-width:900px) { main { grid-template-columns:1fr; } }
+  header span { color:var(--muted); font-size:12px; word-break:break-all; }
+  main { display:grid; grid-template-columns:minmax(320px, 520px) minmax(0, 1fr); gap:16px; padding:16px; }
+  @media (max-width:900px) { main { grid-template-columns:minmax(0, 1fr); padding:10px; } }
   .box { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:16px; }
   h2 { font-size:14px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
   label { display:block; margin:8px 0 2px; color:var(--muted); font-size:12px; }
   input[type=text], input[type=number], select, textarea {
     width:100%; background:#0c0c0c; color:var(--text); border:1px solid var(--line); border-radius:4px;
-    padding:6px 8px; font:inherit; }
+    padding:6px 8px; font:inherit; min-width:0; }
   textarea { min-height:70px; resize:vertical; }
   .row { display:flex; gap:8px; align-items:center; }
-  .row > * { flex:1; }
-  .row > button { flex:none; }
+  .row > * { flex:1; min-width:0; }
+  .row > button, .row > .st, .row > a { flex:none; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:0 10px; }
   .checks { display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:4px 10px; margin-top:8px; }
   .checks label { display:flex; gap:6px; align-items:center; color:var(--text); font-size:13px; margin:0; cursor:pointer; }
   button { background:#2a2a2a; color:var(--text); border:1px solid var(--line); border-radius:4px;
            padding:6px 12px; font:inherit; cursor:pointer; }
   button:hover { border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:default; }
   button.go { background:var(--accent); color:#111; border:0; font-weight:600; padding:8px 18px; }
   button.small { padding:2px 8px; font-size:12px; }
   details { margin-top:10px; }
   summary { cursor:pointer; color:var(--muted); }
   .err { color:var(--bad); min-height:1.2em; margin-top:6px; }
   .hint { color:var(--muted); font-size:12px; }
-  .job { border-top:1px solid var(--line); padding:8px 0; }
+  .hidden { display:none !important; }
+  #opts .opt { display:flex; gap:6px; align-items:center; margin-top:6px; }
+  #opts .opt code { flex:none; min-width:110px; }
+  #opts .opt input, #opts .opt select { flex:1; }
+  .job { border-top:1px solid var(--line); padding:10px 0; }
   .job:first-child { border-top:0; }
-  .job .top { display:flex; gap:8px; align-items:center; }
-  .job .title { flex:1; word-break:break-all; }
+  .job .title { flex:1; word-break:break-all; font-weight:600; }
   .st { font-size:12px; padding:1px 6px; border-radius:3px; background:#2a2a2a; }
   .st.done { color:var(--ok); } .st.failed { color:var(--bad); } .st.running { color:var(--accent); }
+  .meta { font-size:12px; color:var(--muted); display:flex; flex-wrap:wrap; gap:4px 14px; margin-top:4px; }
+  .meta b { color:var(--text); font-weight:normal; }
+  .meta .warn { color:var(--bad); }
+  .pulse { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--ok); margin-right:4px; }
+  .pulse.on { animation:pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity:.2; } }
   .bar { height:4px; background:#2a2a2a; border-radius:2px; margin:6px 0; overflow:hidden; }
   .bar i { display:block; height:100%; background:var(--accent); width:0; transition:width .4s; }
-  pre { background:#0c0c0c; border:1px solid var(--line); border-radius:4px; padding:6px; margin:4px 0 0;
-        max-height:180px; overflow:auto; font-size:11px; white-space:pre-wrap; word-break:break-all; }
-  #renders { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:12px; }
+  pre.log { background:#0c0c0c; border:1px solid var(--line); border-radius:4px; padding:6px; margin:6px 0 0;
+            height:220px; overflow:auto; font-size:11px; white-space:pre-wrap; word-break:break-all; resize:vertical; }
+  pre.log .t { color:var(--muted); }
+  pre.log .v { color:#9ab; }
+  body:not(.adv) pre.log .v { display:none; }
+  .outs a { margin-right:10px; }
+  #renders { display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:12px; }
   .vid { background:#0c0c0c; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
-  .vid video { width:100%; aspect-ratio:9/16; display:block; background:#000; }
+  .vid video { width:100%; aspect-ratio:9/16; display:block; background:#000; object-fit:contain; }
   .vid div { padding:6px 8px; font-size:12px; display:flex; gap:6px; align-items:center; }
   .vid div span { flex:1; word-break:break-all; }
   a { color:var(--accent); }
   dialog { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:8px;
-           width:min(640px, 92vw); padding:12px; }
+           width:min(640px, 94vw); padding:12px; }
   dialog::backdrop { background:#000a; }
-  #pk-list { max-height:55vh; overflow:auto; border:1px solid var(--line); border-radius:4px; margin:8px 0; }
-  #pk-list div { padding:5px 8px; cursor:pointer; display:flex; gap:8px; }
+  #pk-list { max-height:50vh; overflow:auto; border:1px solid var(--line); border-radius:4px; margin:8px 0; }
+  #pk-list div { padding:6px 8px; cursor:pointer; display:flex; gap:8px; }
   #pk-list div:hover { background:#2a2a2a; }
   #pk-list .d::before { content:"📁"; } #pk-list .f::before { content:"🎞"; }
   #pk-list .f.sel { background:#3a3000; }
   #pk-path { font-family:monospace; font-size:12px; word-break:break-all; }
+  #pk-tools { flex-wrap:wrap; margin-top:8px; }
+  #pk-up-prog { flex-basis:100%; }
 </style>
 </head>
 <body>
@@ -70,17 +86,44 @@
   <div class="box">
     <h2>New edit</h2>
     <label>Footage (folder or clip)</label>
-    <div class="row"><input type="text" id="input" placeholder="/home/you/footage"><button data-pick="input" data-kind="video" data-dir="1">Browse</button></div>
-    <label>Song</label>
-    <div class="row"><input type="text" id="audio" placeholder="/home/you/song.mp3"><button data-pick="audio" data-kind="audio">Browse</button></div>
+    <div class="row"><input type="text" id="input" placeholder="/home/you/footage"><button data-pick="input" data-kind="video" data-dir="1">Browse / upload</button></div>
+
+    <label>Sound</label>
+    <select id="music">
+      <option value="file">Song</option>
+      <option value="clips">No song, keep the clips' own sound</option>
+      <option value="mute">No song, silent</option>
+    </select>
+    <div id="song-row" class="row" style="margin-top:6px"><input type="text" id="audio" placeholder="/home/you/song.mp3"><button data-pick="audio" data-kind="audio">Browse / upload</button></div>
+
     <div class="grid2">
-      <div><label>Length (s, blank = whole song)</label><input type="number" id="duration" min="1" step="0.5" value="15"></div>
-      <div><label>Song start</label>
+      <div><label>Length (s, blank = whole song or 20 s)</label><input type="number" id="duration" min="1" step="0.5" value="15"></div>
+      <div id="start-box"><label>Song start</label>
         <div class="row"><select id="start_mode"><option value="auto">auto (the drop)</option><option value="">beginning</option><option value="at">at seconds…</option></select>
-        <input type="number" id="start_at" min="0" step="0.1" placeholder="s" style="display:none"></div></div>
+        <input type="number" id="start_at" min="0" step="0.1" placeholder="s" class="hidden"></div></div>
+      <div id="bpm-box" class="hidden"><label>Cut tempo without a song (BPM)</label><input type="number" id="bpm" min="20" max="300" step="1" value="120"></div>
+      <div><label>Zoom</label>
+        <select id="zoom">
+          <option value="1">Fill the frame (crops the sides)</option>
+          <option value="0.8">Slightly wider</option>
+          <option value="0.6">Wider</option>
+          <option value="0.45">Much wider</option>
+          <option value="0.32">Whole frame (blurred bars)</option>
+        </select></div>
       <div><label>Style profile</label><select id="style"><option value="">none</option></select></div>
       <div><label>Variations</label><input type="number" id="variations" min="1" max="10" value="1"></div>
     </div>
+
+    <label>Captions</label>
+    <select id="captions"><option value="none">No captions</option><option value="file">From a .srt / .ass file</option></select>
+    <div id="cap-box" class="hidden">
+      <div class="row" style="margin-top:6px"><input type="text" id="subs" placeholder="captions.srt"><button data-pick="subs" data-kind="subs">Browse / upload</button></div>
+      <div class="grid2">
+        <div><label>Caption style (.srt)</label><select id="sub_style"><option value="">pop</option><option>glow</option><option>top</option></select></div>
+        <div class="checks" style="align-self:end"><label><input type="checkbox" id="word_reveal"> word by word</label></div>
+      </div>
+    </div>
+
     <div class="checks">
       <label><input type="checkbox" id="preview" checked> preview (fast draft)</label>
       <label><input type="checkbox" id="smart_pick"> smart pick</label>
@@ -97,22 +140,21 @@
           <option>person</option><option>dog</option><option>cat</option><option>car</option><option>bicycle</option><option>motorcycle</option></select></div>
       <div><label>Subject description (Ollama)</label><input type="text" id="subject_desc" placeholder="the guy in the red jacket"></div>
     </div>
-    <details>
+    <details id="more">
       <summary>More options</summary>
       <div class="grid2">
         <div><label>FPS</label><select id="fps"><option>30</option><option>60</option></select></div>
-        <div><label>Fit</label><select id="fit"><option value="">default</option><option>crop</option><option>letterbox</option><option>blur</option><option>track</option></select></div>
-        <div><label>Caption style (.srt)</label><select id="sub_style"><option value="">pop</option><option>glow</option><option>top</option></select></div>
+        <div><label>Fit</label><select id="fit"><option value="">default (crop)</option><option>crop</option><option>letterbox</option><option>blur</option><option>track</option></select></div>
         <div><label>Seed</label><input type="number" id="seed"></div>
       </div>
-      <label>Captions (.srt / .ass, optional)</label>
-      <div class="row"><input type="text" id="subs"><button data-pick="subs" data-kind="subs">Browse</button></div>
       <div class="checks">
-        <label><input type="checkbox" id="word_reveal"> word reveal</label>
         <label><input type="checkbox" id="no_intro"> no dialogue intro</label>
         <label><input type="checkbox" id="no_loudnorm"> no loudness norm</label>
       </div>
-      <label>Extra flags (anything from <code>clips --help</code>)</label>
+      <label>Add an option</label>
+      <select id="opt-add"><option value="">choose…</option></select>
+      <div id="opts"></div>
+      <label>Extra flags as text (optional)</label>
       <input type="text" id="extra" placeholder="--music-in drop --intro-max 6">
     </details>
     <label>Output name</label>
@@ -133,22 +175,33 @@
   <div class="box">
     <h2>Frame a 360 clip by hand</h2>
     <div class="row"><input type="text" id="clip" placeholder=".insv or 360 mp4"><button data-pick="clip" data-kind="video">Browse</button><button class="go" id="frame">Open</button></div>
-    <div class="hint">Opens <code>clips frame</code> in a new tab once its preview is built. Keyframes save next to the clip and renders use them.</div>
+    <div class="hint">Opens <code>clips frame</code> in a new tab once its preview is built (on this PC only). Keyframes save next to the clip and renders use them.</div>
     <div class="err" id="frame-err"></div>
   </div>
 </section>
 
 <section>
-  <div class="box"><h2>Jobs</h2><div id="jobs"><div class="hint">Nothing yet.</div></div></div>
+  <div class="box">
+    <div class="row"><h2 style="margin:0">Jobs</h2><label class="hint" style="margin:0;display:flex;gap:6px;align-items:center;justify-content:flex-end"><input type="checkbox" id="adv"> advanced log (every ffmpeg step)</label></div>
+    <div id="jobs"><div class="hint">Nothing yet.</div></div>
+  </div>
   <div class="box"><h2>Renders</h2><div id="renders"></div></div>
 </section>
 </main>
 
 <dialog id="picker">
-  <div class="row"><b id="pk-title" style="flex:1">Pick</b><button class="small" id="pk-home">Home</button><button class="small" id="pk-up">Up</button></div>
+  <div class="row"><b id="pk-title">Pick</b><button class="small" id="pk-home">Home</button><button class="small" id="pk-up">Up</button></div>
   <div id="pk-path"></div>
   <div id="pk-list"></div>
-  <div class="row"><span class="hint" id="pk-hint"></span><button id="pk-cancel">Cancel</button><button class="go" id="pk-ok">Use this folder</button></div>
+  <div class="row" id="pk-tools">
+    <button class="small" id="pk-mkdir">New folder</button>
+    <button class="small" id="pk-upload">Upload files here</button>
+    <input type="file" id="pk-files" multiple class="hidden">
+    <span class="hint" id="pk-hint"></span>
+    <div id="pk-up-prog" class="hint"></div>
+  </div>
+  <div class="err" id="pk-err"></div>
+  <div class="row" style="margin-top:8px"><span></span><button id="pk-cancel">Cancel</button><button class="go" id="pk-ok">Use this folder</button></div>
 </dialog>
 
 <script>
@@ -156,6 +209,7 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const mb = (n) => (n / 1048576).toFixed(1) + " MB";
+const dur = (s) => s == null ? "" : s < 60 ? s.toFixed(0) + "s" : Math.floor(s / 60) + "m " + String(Math.floor(s % 60)).padStart(2, "0") + "s";
 
 async function post(url, body) {
   const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json", "X-Clips": "1"},
@@ -165,27 +219,72 @@ async function post(url, body) {
   return j;
 }
 
-// remember the form between visits
-const KEEP = ["input","audio","duration","start_mode","start_at","style","variations","preview","smart_pick","loop",
-  "ramp","punch","flash","shuffle","auto_frame","subject","subject_desc","fps","fit","sub_style","seed","subs",
-  "word_reveal","no_intro","no_loudnorm","extra","clip"];
+// ---- remember the form between visits
+const KEEP = ["input","music","audio","duration","start_mode","start_at","bpm","zoom","style","variations","captions",
+  "subs","sub_style","word_reveal","preview","smart_pick","loop","ramp","punch","flash","shuffle","auto_frame",
+  "subject","subject_desc","fps","fit","seed","no_intro","no_loudnorm","extra","clip"];
+let options = [], chosen = [];
 function save() {
-  const v = {};
+  const v = {chosen};
   for (const k of KEEP) v[k] = $(k).type === "checkbox" ? $(k).checked : $(k).value;
-  try { localStorage.setItem("clips-ui", JSON.stringify(v)); } catch (e) {}
+  try { localStorage.setItem("clips-ui", JSON.stringify(v)); localStorage.setItem("clips-adv", $("adv").checked ? "1" : ""); } catch (e) {}
 }
 function load() {
   let v = {};
-  try { v = JSON.parse(localStorage.getItem("clips-ui") || "{}"); } catch (e) {}
+  try { v = JSON.parse(localStorage.getItem("clips-ui") || "{}"); $("adv").checked = !!localStorage.getItem("clips-adv"); } catch (e) {}
   for (const k of KEEP) if (k in v) { if ($(k).type === "checkbox") $(k).checked = v[k]; else $(k).value = v[k]; }
-  $("start_at").style.display = $("start_mode").value === "at" ? "" : "none";
+  if (!("zoom" in v)) $("zoom").value = "0.8";
+  if (Array.isArray(v.chosen)) chosen = v.chosen;
+  sync();
 }
-$("start_mode").onchange = () => { $("start_at").style.display = $("start_mode").value === "at" ? "" : "none"; };
-document.addEventListener("change", save);
+function sync() {
+  const song = $("music").value === "file";
+  $("song-row").classList.toggle("hidden", !song);
+  $("start-box").classList.toggle("hidden", !song);
+  $("bpm-box").classList.toggle("hidden", song);
+  $("start_at").classList.toggle("hidden", $("start_mode").value !== "at");
+  $("cap-box").classList.toggle("hidden", $("captions").value !== "file");
+  document.body.classList.toggle("adv", $("adv").checked);
+  drawOptions();
+}
+document.addEventListener("change", (e) => { if (!e.target.closest("#picker")) { sync(); save(); } });
 
-// ---- file picker (the server lists folders; a browser page cannot see real paths)
+// ---- "add an option": every other clips flag, picked from a list
+function drawOptions() {
+  const add = $("opt-add");
+  const used = new Set(chosen.map((c) => c[0]));
+  add.innerHTML = '<option value="">choose…</option>' + options.filter((o) => o.repeat || !used.has(o.flag))
+    .map((o) => `<option value="${esc(o.flag)}" title="${esc(o.help)}">${esc(o.flag)} — ${esc(o.help.slice(0, 70))}</option>`).join("");
+  const box = $("opts");
+  box.innerHTML = "";
+  chosen.forEach((c, i) => {
+    const o = options.find((x) => x.flag === c[0]) || {kind: "value", help: ""};
+    const row = document.createElement("div");
+    row.className = "opt";
+    let ctl = "";
+    if (o.kind === "choice") ctl = `<select>${o.choices.map((x) => `<option ${x === c[1] ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>`;
+    else if (o.kind === "value") ctl = `<input type="text" placeholder="${esc(o.metavar || "value")}" value="${esc(c[1] || "")}">`;
+    else ctl = '<span class="hint" style="flex:1">on</span>';
+    row.innerHTML = `<code title="${esc(o.help)}">${esc(c[0])}</code>${ctl}<button class="small">✕</button>`;
+    const inp = row.querySelector("input,select");
+    if (inp) inp.oninput = inp.onchange = () => { c[1] = inp.value; save(); };
+    row.querySelector("button").onclick = () => { chosen.splice(i, 1); drawOptions(); save(); };
+    box.appendChild(row);
+  });
+}
+$("opt-add").onchange = (e) => {
+  e.stopPropagation();
+  const o = options.find((x) => x.flag === $("opt-add").value);
+  if (!o) return;
+  chosen.push([o.flag, o.kind === "bool" ? true : o.kind === "choice" ? o.choices[0] : ""]);
+  drawOptions(); save();
+};
+
+// ---- file picker with new folder + upload (the server lists folders; a page cannot see real paths)
 let pk = {target: null, kind: "", dir: false, path: "", sel: null};
+const ACCEPT = {video: "video/*,.insv", audio: "audio/*", subs: ".srt,.ass", json: ".json"};
 async function pkOpen(path) {
+  $("pk-err").textContent = "";
   const r = await fetch(`/api/ls?kind=${pk.kind}&path=${encodeURIComponent(path || "")}`).then((r) => r.json());
   pk.path = r.path; pk.parent = r.parent; pk.home = r.home || pk.home; pk.sel = null;
   $("pk-path").textContent = r.path + (r.error ? "  (" + r.error + ")" : "");
@@ -201,14 +300,17 @@ async function pkOpen(path) {
     el.innerHTML = `<span style="flex:1">${esc(f.name)}</span><span class="hint">${mb(f.size)}</span>`;
     const full = r.path.replace(/\/$/, "") + "/" + f.name;
     el.onclick = () => { for (const x of list.querySelectorAll(".sel")) x.classList.remove("sel");
-                         el.classList.add("sel"); pk.sel = full; $("pk-ok").textContent = "Use this file"; };
+                         el.classList.add("sel"); pk.sel = full; pkButtons(); };
     el.ondblclick = () => { pk.sel = full; pkDone(); };
     list.appendChild(el);
   }
-  $("pk-ok").textContent = pk.dir ? "Use this folder" : "Use this file";
-  $("pk-ok").disabled = !pk.dir;
-  list.onclick = () => { $("pk-ok").disabled = !(pk.dir || pk.sel); };
+  if (!r.dirs.length && !r.files.length) list.innerHTML = '<div class="hint">Empty folder. Upload files or make a folder below.</div>';
   $("pk-hint").textContent = pk.dir ? `${r.files.length} clips here` : "";
+  pkButtons();
+}
+function pkButtons() {
+  $("pk-ok").textContent = pk.sel ? "Use this file" : "Use this folder";
+  $("pk-ok").disabled = !(pk.dir || pk.sel);
 }
 function pkDone() {
   const v = pk.sel || (pk.dir ? pk.path : null);
@@ -219,26 +321,62 @@ for (const b of document.querySelectorAll("[data-pick]")) {
   b.onclick = () => {
     pk.target = b.dataset.pick; pk.kind = b.dataset.kind; pk.dir = !!b.dataset.dir;
     $("pk-title").textContent = pk.dir ? "Pick a footage folder (or one clip)" : "Pick a file";
-    const cur = $(pk.target).value;
+    $("pk-files").accept = ACCEPT[pk.kind] || "";
+    $("pk-up-prog").textContent = "";
     $("picker").showModal();
-    pkOpen(cur);
+    pkOpen($(pk.target).value);
   };
 }
 $("pk-up").onclick = () => pkOpen(pk.parent);
 $("pk-home").onclick = () => pkOpen(pk.home || "");
 $("pk-cancel").onclick = () => $("picker").close();
 $("pk-ok").onclick = pkDone;
+$("pk-mkdir").onclick = async () => {
+  const name = prompt("New folder name");
+  if (!name) return;
+  try { const r = await post("/api/mkdir", {path: pk.path, name}); pkOpen(r.path); }
+  catch (e) { $("pk-err").textContent = e.message; }
+};
+$("pk-upload").onclick = () => $("pk-files").click();
+function uploadOne(file, dir, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("POST", `/api/upload?dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(file.name)}`);
+    x.setRequestHeader("X-Clips", "1");
+    x.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch (e) {}
+                       x.status === 200 ? resolve(j) : reject(new Error(j.error || x.statusText)); };
+    x.onerror = () => reject(new Error("upload failed (connection)"));
+    x.send(file);
+  });
+}
+$("pk-files").onchange = async () => {
+  const files = [...$("pk-files").files], dir = pk.path;
+  $("pk-err").textContent = "";
+  let last = null;
+  for (const [i, f] of files.entries()) {
+    try {
+      last = await uploadOne(f, dir, (p) => { $("pk-up-prog").textContent = `uploading ${i + 1}/${files.length}: ${f.name} ${Math.round(p * 100)}%`; });
+    } catch (e) { $("pk-err").textContent = `${f.name}: ${e.message}`; }
+  }
+  $("pk-files").value = "";
+  $("pk-up-prog").textContent = files.length ? `uploaded ${files.length} file(s)` : "";
+  await pkOpen(dir);
+  if (last && !pk.dir && files.length === 1) { pk.sel = last.path; pkButtons(); }
+};
 
 // ---- actions
 function form() {
   const f = {};
-  for (const k of ["input","audio","duration","style","variations","subject","subject_desc","fps","fit",
-                   "sub_style","seed","subs","extra","name"]) f[k] = $(k).value.trim();
+  for (const k of ["input","music","audio","duration","bpm","zoom","style","variations","captions","subs","sub_style",
+                   "subject","subject_desc","fps","fit","seed","extra","name"]) f[k] = $(k).value.trim();
   for (const k of ["preview","smart_pick","loop","ramp","punch","flash","shuffle","auto_frame","word_reveal",
                    "no_intro","no_loudnorm"]) f[k] = $(k).checked;
   const m = $("start_mode").value;
   f.audio_start = m === "at" ? $("start_at").value.trim() : m;
   if (f.fps === "30") f.fps = "";
+  if (f.bpm === "120") f.bpm = "";
+  f.options = chosen;
   return f;
 }
 async function act(btn, errId, url, body) {
@@ -252,29 +390,86 @@ $("render").onclick = () => act($("render"), "render-err", "/api/render", form()
 $("learn").onclick = () => act($("learn"), "learn-err", "/api/learn", {links: $("links").value, name: $("learn_name").value});
 $("frame").onclick = () => act($("frame"), "frame-err", "/api/frame", {clip: $("clip").value.trim()});
 
-// ---- live state
-const opened = new Set();
-let lastRenders = "";
+// ---- live jobs: one card per job, updated in place; the log only appends
+const cards = new Map(), opened = new Set();
+const VERBOSE = /^\[\d\d:\d\d:\d\d\] /;
+function card(j) {
+  let c = cards.get(j.id);
+  if (c) return c;
+  const el = document.createElement("div");
+  el.className = "job";
+  el.innerHTML = `<div class="row"><span class="title"></span><span class="st"></span><button class="small cancel">Cancel</button></div>
+    <div class="meta"><span class="stage"></span><span class="beat"></span></div>
+    <div class="bar"><i></i></div><div class="outs"></div>
+    <details><summary>log <a class="full" target="_blank">full log file</a></summary><pre class="log"></pre></details>`;
+  el.querySelector(".title").textContent = j.title;
+  el.querySelector(".full").href = `/api/jobs/${j.id}/log`;
+  el.querySelector(".cancel").onclick = () => post(`/api/jobs/${j.id}/cancel`).then(refresh);
+  c = {el, seq: 0, cpu: [], pre: el.querySelector("pre"), det: el.querySelector("details")};
+  if (j.status === "running") c.det.open = true;
+  cards.set(j.id, c);
+  return c;
+}
+function updateJob(j) {
+  const c = card(j), el = c.el;
+  const live = j.status === "running" || j.status === "queued";
+  const st = el.querySelector(".st");
+  st.className = "st " + j.status;
+  st.textContent = j.status + (j.kind === "render" && live && j.progress ? " " + Math.round(j.progress * 100) + "%" : "");
+  const cancel = el.querySelector(".cancel");
+  cancel.classList.toggle("hidden", !live);
+  cancel.textContent = j.kind === "frame" && j.status === "running" ? "Stop" : "Cancel";
+  el.querySelector(".bar").classList.toggle("hidden", !(j.kind === "render" && live));
+  el.querySelector(".bar i").style.width = Math.round(j.progress * 100) + "%";
+  // heartbeat: elapsed, time since the last line, CPU used by clips + ffmpeg
+  let beat = "";
+  if (j.status === "running") {
+    c.cpu.push([Date.now(), j.cpu]); if (c.cpu.length > 6) c.cpu.shift();
+    const [t0, u0] = c.cpu[0], busy = j.cpu != null && u0 != null && Date.now() > t0 ? (j.cpu - u0) / ((Date.now() - t0) / 1000) : null;
+    const working = busy == null ? null : busy > 0.05;
+    beat = `<span class="pulse ${working !== false ? "on" : ""}"></span>running <b>${dur(j.elapsed)}</b> · last output <b>${dur(j.idle)}</b> ago`;
+    if (busy != null) beat += ` · CPU <b>${Math.round(busy * 100)}%</b>`;
+    if (j.idle > 120 && working === false) beat += ` <span class="warn">· no output and no CPU use for a while: it may be stuck</span>`;
+    else if (j.idle > 30) beat += " · still working (long steps print nothing)";
+  } else if (j.status === "queued") beat = "waiting for the job before it";
+  else beat = `took <b>${dur(j.elapsed)}</b>`;
+  el.querySelector(".stage").innerHTML = j.stage && j.status === "running" ? `step: <b>${esc(j.stage)}</b>` : "";
+  el.querySelector(".beat").innerHTML = beat;
+  const outs = j.outputs.map((o) => `<a href="/renders/${encodeURIComponent(o)}" target="_blank">${esc(o)}</a>`).join("");
+  const link = j.url ? `<a href="${esc(j.url)}" target="_blank">open framing tool</a>` : "";
+  const html = link + (j.status === "done" ? outs : "");
+  const o = el.querySelector(".outs"); if (o.innerHTML !== html) o.innerHTML = html;
+  // append new log lines; stay pinned to the bottom only if the reader was already there
+  const pre = c.pre;
+  const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 24;
+  const fresh = j.log.filter((x) => x[0] > c.seq);
+  if (fresh.length) {
+    const frag = document.createDocumentFragment();
+    for (const [seq, t, line] of fresh) {
+      const s = document.createElement("div");
+      if (VERBOSE.test(line)) s.className = "v";
+      s.innerHTML = `<span class="t">+${t.toFixed(1)}s</span> ${esc(line)}`;
+      frag.appendChild(s);
+    }
+    pre.appendChild(frag);
+    c.seq = fresh[fresh.length - 1][0];
+    while (pre.childNodes.length > 3000) pre.removeChild(pre.firstChild);
+    if (atBottom) pre.scrollTop = pre.scrollHeight;
+  }
+  if (j.status === "failed" && !c.failedOpen) { c.det.open = true; c.failedOpen = true; pre.scrollTop = pre.scrollHeight; }
+  if (j.url && j.status === "running" && !opened.has(j.id)) { opened.add(j.id); window.open(j.url, "_blank"); }
+}
 function renderJobs(jobs) {
   const box = $("jobs");
-  const open = new Set([...box.querySelectorAll("details[open]")].map((d) => d.dataset.id));
-  if (!jobs.length) { box.innerHTML = '<div class="hint">Nothing yet.</div>'; return; }
-  box.innerHTML = jobs.map((j) => {
-    const pct = Math.round(j.progress * 100);
-    const live = j.status === "running" || j.status === "queued";
-    const outs = j.outputs.map((o) => `<a href="/renders/${encodeURIComponent(o)}" target="_blank">${esc(o)}</a>`).join(" ");
-    const link = j.url ? `<a href="${esc(j.url)}" target="_blank">open framing tool</a>` : "";
-    return `<div class="job">
-      <div class="top"><span class="title">${esc(j.title)}</span><span class="st ${j.status}">${j.status}${j.kind === "render" && live ? " " + pct + "%" : ""}</span>
-        ${live ? `<button class="small" data-cancel="${j.id}">${j.kind === "frame" && j.status === "running" ? "Stop" : "Cancel"}</button>` : ""}</div>
-      ${j.kind === "render" && live ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ""}
-      <div>${link} ${j.status === "done" ? outs : ""}</div>
-      <details data-id="${j.id}" ${open.has(String(j.id)) || j.status === "failed" ? "open" : ""}><summary>log</summary>
-        <pre>${esc(j.command)}\n\n${esc(j.log.join("\n"))}</pre></details></div>`;
-  }).join("");
-  for (const b of box.querySelectorAll("[data-cancel]")) b.onclick = () => post(`/api/jobs/${b.dataset.cancel}/cancel`).then(refresh);
-  for (const j of jobs) if (j.url && j.status === "running" && !opened.has(j.id)) { opened.add(j.id); window.open(j.url, "_blank"); }
+  if (!jobs.length) { if (!cards.size) box.innerHTML = '<div class="hint">Nothing yet.</div>'; return; }
+  if (box.querySelector(".hint") && !cards.size) box.innerHTML = "";
+  jobs.forEach((j, i) => {
+    updateJob(j);
+    const el = cards.get(j.id).el;
+    if (box.children[i] !== el) box.insertBefore(el, box.children[i] || null);
+  });
 }
+let lastRenders = "";
 function renderList(items) {
   const key = items.map((r) => r.name + r.mtime).join("|");
   if (key === lastRenders) return;
@@ -299,9 +494,13 @@ async function refresh() {
     renderList(s.renders);
   } catch (e) {}
 }
-load();
-refresh().then(load);
-setInterval(refresh, 1000);
+async function start() {
+  try { options = await fetch("/api/options").then((r) => r.json()); } catch (e) {}
+  await refresh();
+  load();
+  setInterval(refresh, 1000);
+}
+start();
 </script>
 </body>
 </html>

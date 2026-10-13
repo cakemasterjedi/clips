@@ -38,7 +38,12 @@ Render. Renders queue and run one at a time with a live progress bar and log; fi
 play in the page and can be downloaded. You can also learn a creator style from links (it
 shows up in the style list when done) and open `clips frame` on a 360 clip. Renders and
 styles are kept in `~/Videos/clips` (`--workdir` to change, `--port`, `--no-browser`).
-Anything without its own control goes in "Extra flags". Keep the terminal open while you use
+Every other `clips` option can be added from the "Add an option" list under More options.
+The file pickers can make folders and upload files from the device you are browsing on
+(phone footage straight into a folder on the PC). Captions are off unless you pick a file.
+Each job shows its current step, how long it has run, how long since its last output and the
+CPU it is using, so a long quiet step is not mistaken for a freeze; tick "advanced log" to see
+every FFmpeg step, and "full log file" opens the whole log (also kept in `~/Videos/clips/logs`). Keep the terminal open while you use
 the page. It only answers on this PC; to open it from a phone or another computer on your
 network run `clips ui --host 0.0.0.0` and open the full link it prints (it carries a random
 key; anyone with that link can use clips on your PC). If it does not load, open the port in
@@ -71,6 +76,23 @@ your firewall (`sudo ufw allow 8361/tcp`). The 360 framing tool still opens on t
 Tests: `.venv/bin/python -m pytest -q` (offline).
 
 Audio is loudness-normalized to -14 LUFS (true peak -1.5 dB) in two passes after the final pass (measure with `loudnorm`, then one fixed gain plus a peak limiter, so drops keep their punch) (video stream copied, not re-encoded). Silent output is left alone. `--no-loudnorm` skips it.
+
+## No song
+
+    clips FOOTAGE --no-music --duration 15 -o out.mp4     # each shot keeps its own sound
+    clips FOOTAGE --mute --duration 15 -o out.mp4         # silent
+
+Cuts fall on a steady grid (`--bpm`, default 120, about 1.6 s shots; `--beats-per-cut` works
+too). Without `--duration` the edit is 20 s or the total footage, whichever is shorter.
+`--loop` and `--export-edl` need a song.
+
+## Zoom
+
+`--zoom Z` (default 1) sets how far in the frame is. 1 fills 9:16 by cropping the sides of
+landscape footage; below 1 shows more of each clip on a blurred, darkened copy of itself
+(0.32 shows the whole width of 16:9 footage); above 1 zooms in. For 360 footage it widens or
+narrows the view (`--fov` divided by Z). Applies to the default crop fit; `--fit letterbox`
+and `--fit blur` already show the whole frame. The web UI starts at 0.8.
 
 ## Look options (all off/default unless given)
 

@@ -45,6 +45,58 @@ def test_render_argv(tmp_path, media):
         ui.render_argv({"input": str(d), "audio": str(song), "extra": "-o /etc/x.mp4"}, r)
 
 
+def test_render_argv_sound_captions_options(tmp_path, media):
+    d, song = media
+    r = tmp_path / "renders"
+    argv = ui.render_argv({"input": str(d), "music": "clips", "audio": str(song), "zoom": "0.8",
+                           "bpm": "100", "audio_start": "auto", "captions": "none",
+                           "subs": "x.srt", "options": [["--music-in", "drop"], ["--360", "off"],
+                                                        ["--no-intro", True], ["bad", 1]]}, r)
+    assert argv[1] == "--no-music" and "--audio" not in argv and "--audio-start" not in argv
+    assert "--subs" not in argv and argv[argv.index("--zoom") + 1] == "0.8"
+    assert argv[argv.index("--bpm") + 1] == "100"
+    assert argv[-5:] == ["--music-in", "drop", "--360", "off", "--no-intro"]
+    assert ui.render_argv({"input": str(d), "music": "mute"}, r)[1] == "--mute"
+    with pytest.raises(ClipsError, match="caption"):
+        ui.render_argv({"input": str(d), "audio": str(song), "captions": "file"}, r)
+    flags = {o["flag"]: o for o in ui.option_list()}
+    assert "--music-in" in flags and flags["--music-in"]["choices"] == ["rise", "drop"]
+    assert "--audio" not in flags and "--zoom" not in flags and flags["--intro"]["repeat"]
+
+
+def test_upload_and_mkdir(tmp_path):
+    srv = ui.serve(tmp_path / "work", 0, False)
+    try:
+        d = tmp_path / "up"
+        d.mkdir()
+        assert json.loads(req(srv, "POST", "/api/mkdir", {"path": str(d), "name": "new"})[1])["ok"]
+        assert (d / "new").is_dir()
+        assert req(srv, "POST", "/api/mkdir", {"path": str(d), "name": "../x"})[0] == 400
+
+        def up(name, data, folder=d):
+            c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+            c.request("POST", f"/api/upload?dir={folder}&name={name}", data, {"X-Clips": "1"})
+            r = c.getresponse()
+            return r.status, json.loads(r.read())
+        st, body = up("clip.mp4", b"abc" * 1000)
+        assert st == 200 and (d / "clip.mp4").read_bytes() == b"abc" * 1000
+        st, body = up("..%2F..%2Fclip.mp4", b"zz")             # path parts are dropped
+        assert st == 200 and body["name"] == "clip-1.mp4" and (d / "clip-1.mp4").exists()
+        assert up("x.mp4", b"1", tmp_path / "missing")[0] == 400
+        assert not any(p.name.endswith(".part") for p in d.iterdir())
+    finally:
+        srv.shutdown()
+
+
+def test_stage_and_cpu():
+    assert ui.stage_of("shot 3/9") == "rendering shot 3/9"
+    assert ui.stage_of("final pass...").startswith("final pass")
+    assert ui.stage_of("[12:00:00] ffmpeg start: a -> b") is None
+    import os
+    cpu = ui.group_cpu(os.getpgid(0))
+    assert cpu is None or cpu > 0
+
+
 def test_learn_and_frame_argv(tmp_path):
     p = tmp_path / "profiles"
     assert ui.learn_argv({"links": "https://a/1\n https://a/2 ", "name": "Cool Creator"}, p) == [
@@ -125,7 +177,7 @@ def test_server_jobs(tmp_path, media):
                           {"input": str(d), "audio": str(song), "name": "t1"})
         assert st == 200
         j = wait_job(srv, json.loads(body)["id"])
-        assert j.status == "done" and j.progress == 1.0 and "shot 2/2" in j.log
+        assert j.status == "done" and j.progress == 1.0 and "shot 2/2" in [x[2] for x in j.log]
         state = json.loads(req(srv, "GET", "/api/state")[1])
         assert [r["name"] for r in state["renders"]] == ["t1.mp4"]
         assert state["jobs"][0]["outputs"] == ["t1.mp4"]
@@ -174,7 +226,9 @@ def test_real_render(tmp_path, media):
         assert j.status == "done", list(j.log)
         info = probe(srv.renders / "real.mp4")
         assert (info.width, info.height) == (1080, 1920)
-        assert any(line.startswith("shot ") for line in j.log)
+        assert any(x[2].startswith("shot ") for x in j.log)
+        assert any("ffmpeg done" in x[2] for x in j.log)          # verbose detail lines
+        assert j.logfile.is_file() and "final pass" in j.logfile.read_text()
     finally:
         srv.shutdown()
 
@@ -212,6 +266,60 @@ def test_page_in_browser(tmp_path, media):
             pg.wait_for_selector(".vid video", timeout=20000)
             assert "fromui.mp4" in pg.inner_text("#renders")
             assert "done" in pg.inner_text("#jobs")
+            if os.environ.get("CLIPS_UI_SHOT"):
+                pg.screenshot(path=os.environ["CLIPS_UI_SHOT"], full_page=True)
+            b.close()
+        assert not errors
+    finally:
+        srv.shutdown()
+
+
+CHATTY = r"""
+import sys, time
+for i in range(200):
+    print(f"[00:00:00] ffmpeg done in 0.1s: seg_{i:04d}.mp4" if i % 2 else f"shot {i}/200",
+          file=sys.stderr, flush=True)
+    time.sleep(0.04)
+"""
+
+
+def test_page_live_log(tmp_path, media):
+    """Song/caption choices, the option picker, and a log that keeps its scroll position."""
+    import os
+    sync = pytest.importorskip("playwright.sync_api")
+    d, song = media
+    fake = tmp_path / "chatty.py"
+    fake.write_text(CHATTY)
+    srv = ui.serve(tmp_path / "work", 0, False, [sys.executable, str(fake)])
+    exe = os.environ.get("CLIPS_CHROMIUM", "/opt/pw-browsers/chromium")
+    kw = {"executable_path": exe} if os.path.exists(exe) else {}
+    try:
+        with sync.sync_playwright() as p:
+            b = p.chromium.launch(**kw)
+            pg = b.new_page(viewport={"width": 1280, "height": 1000})
+            errors = []
+            pg.on("pageerror", lambda e: errors.append(str(e)))
+            pg.goto(srv.url)
+            pg.fill("#input", str(d))
+            pg.select_option("#music", "clips")
+            assert not pg.is_visible("#audio") and pg.is_visible("#bpm")
+            assert not pg.is_visible("#subs")
+            pg.click("#more summary")
+            pg.select_option("#opt-add", "--music-in")
+            pg.select_option("#opts select", "drop")
+            pg.click("#render")
+            pg.wait_for_function("document.querySelectorAll('pre.log div').length > 40")
+            first = pg.inner_text("pre.log div:first-child")
+            assert "--no-music" in first and "--music-in drop" in first
+            assert "running" in pg.inner_text(".job .meta")
+            pg.evaluate("document.querySelector('pre.log').scrollTop = 0")
+            n0 = pg.evaluate("document.querySelectorAll('pre.log div').length")
+            pg.wait_for_timeout(2500)
+            assert pg.evaluate("document.querySelectorAll('pre.log div').length") > n0
+            assert pg.evaluate("document.querySelector('pre.log').scrollTop") < 5   # stayed put
+            assert not pg.is_visible("pre.log div.v")             # verbose lines hidden by default
+            pg.check("#adv")
+            assert pg.is_visible("pre.log div.v")
             if os.environ.get("CLIPS_UI_SHOT"):
                 pg.screenshot(path=os.environ["CLIPS_UI_SHOT"], full_page=True)
             b.close()
