@@ -16,7 +16,7 @@ clips = "clips.cli:main"
 packages = ["clips"]
 
 [tool.setuptools.package-data]
-clips = ["frame_ui.html"]
+clips = ["frame_ui.html", "ui.html"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }

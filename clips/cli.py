@@ -411,6 +411,19 @@ def build_frame_parser() -> argparse.ArgumentParser:
     return p
 
 
+def build_ui_parser() -> argparse.ArgumentParser:
+    from . import ui
+    p = argparse.ArgumentParser(
+        prog="clips ui",
+        description="Local web page for clips: pick footage and a song, set options, learn "
+                    "styles, run renders with live progress and play or download the results.")
+    p.add_argument("--workdir", default=str(ui.DEFAULT_WORKDIR),
+                   help=f"where renders/ and profiles/ go (default {ui.DEFAULT_WORKDIR})")
+    p.add_argument("--port", type=int, default=8361, help="local port (default 8361)")
+    p.add_argument("--no-browser", action="store_true", help="do not open the browser")
+    return p
+
+
 def build_autoframe_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="clips autoframe",
@@ -453,13 +466,15 @@ def run_learn(args) -> int:
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    sub = argv[0] if argv and argv[0] in ("learn", "frame", "autoframe") else None
+    sub = argv[0] if argv and argv[0] in ("learn", "frame", "autoframe", "ui") else None
     if sub == "learn":
         args = build_learn_parser().parse_args(argv[1:])
     elif sub == "frame":
         args = build_frame_parser().parse_args(argv[1:])
     elif sub == "autoframe":
         args = build_autoframe_parser().parse_args(argv[1:])
+    elif sub == "ui":
+        args = build_ui_parser().parse_args(argv[1:])
     else:
         args = build_parser().parse_args(argv)
     try:
@@ -469,6 +484,9 @@ def main(argv=None) -> int:
         if sub == "autoframe":
             from .autoframe import run_autoframe
             return run_autoframe(args)
+        if sub == "ui":
+            from .ui import run_ui
+            return run_ui(args)
         return run_learn(args) if sub == "learn" else run(args)
     except ClipsError as exc:
         print(f"error: {exc}", file=sys.stderr)
