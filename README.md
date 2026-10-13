@@ -30,6 +30,7 @@ Tests: `.venv/bin/python -m pytest -q` (offline).
 - `--word-reveal` (.srt only): words appear one by one inside each cue.
 - `--smart-pick`: instead of walking each clip in order, score all footage (motion + sharpness, local DSP) and give the best windows to the opening shot first, then to the strongest beat hits. Black, blank/blurry, frozen footage and windows containing a cut inside the clip are avoided; windows never overlap and neighbouring shots come from different clips when possible.
 - `--loop`: seamless replay. The music ends on the beat (within the last 8 beats before the requested end, never later) whose continuation sounds most like the opening beat (chroma + MFCC similarity, Infinite-Jukebox style), the audio only gets a 20 ms fade at both ends, and the last 0.25 s of video dissolves into the opening frame. `--dry-run` reports `loop_match` (similarity).
+- `--preview`: fast draft. Shots are rendered at 270x480 with an ultrafast encode and upscaled to 1080x1920 in the final pass (subtitles are burned at full size), so the output spec is unchanged but it looks soft. Use it to check cuts before the real render.
 - `--punch`: zoom punch (1.12 -> 1.0 in 0.18 s) on the strongest ~35% of beat hits.
 - `--flash`: white flash on the strongest ~15% of beat hits.
 - `.ass` input ignores `--sub-style`/`--word-reveal` (with a warning). `--dry-run` JSON also reports `hit`, `punch`, `flash`.

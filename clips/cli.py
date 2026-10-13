@@ -40,6 +40,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--loop", action="store_true",
                    help="seamless replay: end on the beat that sounds most like the start and "
                         "dissolve the last shot into the first frame")
+    p.add_argument("--preview", action="store_true",
+                   help="fast draft: shots rendered small and upscaled, quick low-quality encode")
     p.add_argument("--smart-pick", action="store_true",
                    help="give the busiest, sharpest footage to the opening shot and strongest hits")
     p.add_argument("--seed", type=int)
@@ -220,7 +222,7 @@ def run(args) -> int:
     render(plan, all_sources, assigns, Path(args.audio), audio_start, args.subs,
            Path(args.output), fit=args.fit, sub_style=args.sub_style,
            word_reveal=args.word_reveal, intro=ia,
-           loop=args.loop,
+           loop=args.loop, preview=args.preview,
            **({"punch_zoom": knobs["punch_zoom"]} if knobs["punch_zoom"] else {}))
     print(f"wrote {args.output}", file=sys.stderr)
     return 0
