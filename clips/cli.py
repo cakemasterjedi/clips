@@ -58,6 +58,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--auto-frame", action="store_true",
                    help="frame 360 clips like the --style creator: write keyframe files "
                         "(<clip>.view.json, editable with `clips frame`) for clips without one")
+    p.add_argument("--subject", metavar="WHAT",
+                   help="follow a subject found by a local detector instead of the most motion: "
+                        "auto (people first), biggest, or a class such as person, dog, car "
+                        "(needs requirements-vision.txt)")
+    p.add_argument("--detector", choices=("s", "tiny", "nano"), default="s",
+                   help="YOLOX model size for --subject: s (best), tiny, nano (fastest)")
+    p.add_argument("--device", choices=("auto", "cpu", "gpu"), default="auto",
+                   help="where --subject runs: auto = GPU if a GPU build of onnxruntime is installed")
     p.add_argument("--smart-pick", action="store_true",
                    help="give the busiest, sharpest footage to the opening shot and strongest hits")
     p.add_argument("--seed", type=int)
@@ -141,6 +149,8 @@ def build_views(args, plan, sources, assigns):
         s = sources[a.source]
         if a.source not in base:
             base[a.source] = reframe.detect_view(s.path, s.info or probe(s.path), args.mode360)
+    from . import subject as SJ
+    subj = SJ.options_from(args)
     if args.fit != "track" and not any(v.is360 for v in base.values()):
         return None
     if args.fov <= 0 or args.fov >= 180:
@@ -152,7 +162,7 @@ def build_views(args, plan, sources, assigns):
         for i, v in base.items():
             s = sources[i]
             if v.is360 and not reframe.sidecar_path(s.path).exists():
-                keys = autoframe.auto_keyframes(s.path, v, s.duration, framing, args.fov)
+                keys = autoframe.auto_keyframes(s.path, v, s.duration, framing, args.fov, subj)
                 auto_keys[i] = keys
                 if not args.dry_run:
                     autoframe.write_keyframes(s.path, keys)
@@ -172,10 +182,17 @@ def build_views(args, plan, sources, assigns):
                 v.eq = reframe.eq_size(v, info.width or 0, info.height or 0)
                 v = reframe.keyed_view(v, keys, a.start)
             else:
-                v = reframe.auto_view(s.path, v, a.start, sh.length)
+                sv = subj and SJ.shot_view(SJ.clip_path(s.path, v, s.duration, subj), v,
+                                           a.start, sh.length)
+                v = (reframe.View(v.kind, v.lenses, v.pair, sv[0], sv[1], v.fov) if sv else
+                     reframe.auto_view(s.path, v, a.start, sh.length))
         elif args.fit == "track":
             info = s.info or probe(s.path)
-            v = reframe.track_view(s.path, a.start, sh.length, info.width or 1080, info.height or 1920)
+            st = subj and SJ.shot_track(SJ.clip_path(s.path, v, s.duration, subj,
+                                                     (info.width or 0, info.height or 0)),
+                                        a.start, sh.length)
+            v = (reframe.View(track=st) if st else
+                 reframe.track_view(s.path, a.start, sh.length, info.width or 1080, info.height or 1920))
             if getattr(args, "_framing", None):
                 v.track, v.place = autoframe.flat_track(v.track, framing)
         views.append(v)
@@ -226,6 +243,8 @@ def run_variations(args) -> int:
 def run(args) -> int:
     if args.variations != 1:
         return run_variations(args)
+    if args.subject and args.fit is None:
+        args.fit = "track"            # flat footage can only follow a subject by panning the crop
     knobs = apply_style(args)
     if not args.output and not args.dry_run:
         raise ClipsError("-o/--output is required unless --dry-run")
@@ -398,6 +417,14 @@ def build_autoframe_parser() -> argparse.ArgumentParser:
     p.add_argument("--360", dest="mode360", default="auto",
                    choices=["auto", "equirect", "dfisheye"], help="force the 360 layout")
     p.add_argument("--force", action="store_true", help="replace existing keyframe files")
+    p.add_argument("--subject", metavar="WHAT",
+                   help="follow a subject found by a local detector instead of the most motion: "
+                        "auto (people first), biggest, or a class such as person, dog, car "
+                        "(needs requirements-vision.txt)")
+    p.add_argument("--detector", choices=("s", "tiny", "nano"), default="s",
+                   help="YOLOX model size for --subject: s (best), tiny, nano (fastest)")
+    p.add_argument("--device", choices=("auto", "cpu", "gpu"), default="auto",
+                   help="where --subject runs: auto = GPU if a GPU build of onnxruntime is installed")
     return p
 
 

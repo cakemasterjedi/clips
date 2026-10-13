@@ -97,6 +97,22 @@ A virtual camera operator follows the action through each 360 clip the way the c
 
 With `--style` and `--fit track`, flat footage follows the same profile: the crop holds still for creators who rarely move the camera and places the action at their height in the frame.
 
+### Following a subject (`--subject`, optional local AI)
+
+```
+pip install -r requirements-vision.txt                    # once (CPU); see below for GPU
+clips autoframe CLIPS_FOLDER --subject person              # 360: keyframes follow the person
+clips CLIPS_FOLDER --audio song.mp3 --subject dog -o out.mp4   # 360 view / flat crop follow the dog
+```
+
+Instead of the area with the most motion, the framer follows a subject found by a local object detector (YOLOX, Apache-2.0, runs on your machine; the model file is downloaded once into your cache, about 35 MB for `--detector s`, 20 MB `tiny`, 4 MB `nano`). `--subject` takes `auto` (people first, else the most prominent thing), `biggest`, or a class name such as `person`, `dog`, `cat`, `car`, `bicycle`, `skateboard`, `horse`, `boat` (any of the 80 COCO classes, comma-separated for several). The subject is the most prominent track of that class over the clip; when it disappears behind something, a later track with similar colours takes over, and while it is not found the framer falls back to motion. 360 frames are cut into 5 normal-looking views around the horizon before detection, so people near the seam or stretched by the projection are still found. On flat footage `--subject` implies `--fit track`. Works with `--auto-frame` and `--style`, and the result stays editable in `clips frame`.
+
+Speed: about one minute of CPU per minute of 360 footage with `--detector s` (5 tiles every 0.5 s), roughly 3x faster with `tiny`; results are cached per clip, so variations and re-renders are instant. `--device auto|cpu|gpu` (default auto uses a GPU when a GPU build of ONNX Runtime is installed):
+
+- Windows, any GPU including AMD Radeon (e.g. RX 6700 XT): `pip uninstall onnxruntime` then `pip install onnxruntime-directml`.
+- Linux with an AMD GPU: install ROCm and MIGraphX, then `pip install onnxruntime-migraphx`. RX 6000 cards that ROCm does not list (6700 XT = gfx1031) need `HSA_OVERRIDE_GFX_VERSION=10.3.0` in the environment.
+- NVIDIA: `onnxruntime-gpu`. macOS: the standard package already uses CoreML.
+
 ### Framing by hand: `clips frame`
 
 ```

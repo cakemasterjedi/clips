@@ -6,7 +6,7 @@
 ### Implicit Rules
 - Python 3.12 venv at .venv (uv); run tests: .venv/bin/python -m pytest -q
 - Output strictly 1080x1920 SAR1 yuv420p, 30fps default, --fps 60 allowed
-- No paid/external APIs, no AI audio models; librosa + FFmpeg only
+- No paid/external APIs; free local AI models are OK (optional extras, e.g. `--subject` via ONNX Runtime); librosa + FFmpeg for the core
 - Check DECISIONS.md before proposing other libraries
 - Ask max 4 clarifying questions when ambiguous
 - Subtitle times relative to output video, not shifted by --audio-start

@@ -140,9 +140,13 @@ def _fits(a: RF.Keyframe, b: RF.Keyframe, mid: Sequence[RF.Keyframe]) -> bool:
 
 # ---------------------------------------------------------------- clips
 def auto_keyframes(path: Path, view: RF.View, duration: float, framing: dict,
-                   fov: float = RF.H_FOV) -> List[RF.Keyframe]:
+                   fov: float = RF.H_FOV, subject=None) -> List[RF.Keyframe]:
+    """subject: subject.Options to follow a detected subject (motion where it is not found)."""
     frames = RF.strip_frames(path, view, 0.0, duration)
     tg = motion_targets(frames, view.kind == "dfisheye")
+    if subject is not None:
+        from . import subject as SJ
+        tg = SJ.targets(SJ.clip_path(path, view, duration, subject), tg)
     return simplify(camera_path(tg, duration, framing, fov))
 
 
@@ -171,7 +175,9 @@ def run_autoframe(args) -> int:
     from .ffmpeg import probe
     from .sources import discover
     from . import style as style_mod
+    from .subject import options_from
     prof = style_mod.load_profile(args.style) if args.style else None
+    subj = options_from(args)
     fr = framing_of(prof)
     if args.fov <= 0 or args.fov >= 180:
         raise ClipsError("--fov must be between 0 and 180")
@@ -185,7 +191,7 @@ def run_autoframe(args) -> int:
             print(f"{src.path.name}: keeping existing {RF.sidecar_path(src.path).name} "
                   "(--force to replace)", file=sys.stderr)
             continue
-        keys = auto_keyframes(src.path, view, src.duration, fr, args.fov)
+        keys = auto_keyframes(src.path, view, src.duration, fr, args.fov, subj)
         write_keyframes(src.path, keys, force=True)
         done += 1
         print(f"{src.path.name}: {len(keys)} keyframes -> {RF.sidecar_path(src.path).name}",
