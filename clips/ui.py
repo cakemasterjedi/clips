@@ -11,8 +11,9 @@ page links to it.
 Same rules as `clips frame`: by default the server listens on 127.0.0.1 only, answers only
 requests whose Host is localhost, and every POST must carry the X-Clips header (a cross-site
 page cannot send it without a CORS preflight, which is never granted). `--host 0.0.0.0` opens
-it to other devices on the network: then any Host is accepted, and anyone who can reach the
-port can browse folders and start renders. Renders run one at a time.
+it to other devices on the network: then any Host is accepted, and every request needs the
+random key from the printed link (stored in a cookie on first visit); anyone with that link
+can browse folders and start renders. Renders run one at a time.
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ import json
 import os
 import queue
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -33,6 +35,8 @@ import sys
 import threading
 import time
 import webbrowser
+from http.cookies import SimpleCookie
+from hmac import compare_digest
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -323,6 +327,8 @@ class UIServer(ThreadingHTTPServer):
         self.profiles.mkdir(parents=True, exist_ok=True)
         self.jobs = Jobs(self.workdir, cmd)
         self.local_only = is_loopback(host)
+        # on the network the page needs a key from the printed link (kept in a cookie after)
+        self.key = None if self.local_only else secrets.token_urlsafe(12)
         super().__init__((host, port), Handler)
 
     @property
@@ -342,7 +348,7 @@ class UIServer(ThreadingHTTPServer):
                     ips = [s.getsockname()[0]]
             except OSError:
                 ips = [socket.gethostname()]
-        return [f"http://{ip}:{self.server_address[1]}/" for ip in ips]
+        return [f"http://{ip}:{self.server_address[1]}/?key={self.key}" for ip in ips]
 
 
 def is_loopback(host: str) -> bool:
@@ -356,10 +362,23 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _host_ok(self) -> bool:
-        if not self.server.local_only:
-            return True
+        if not self.server.local_only:                     # this PC itself needs no key
+            return is_loopback(self.client_address[0]) or self._key_ok()
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
         return host in ("127.0.0.1", "localhost", "[::1]")
+
+    def _query_key(self) -> str:
+        return parse_qs(urlparse(self.path).query).get("key", [""])[0]
+
+    def _key_ok(self) -> bool:
+        want = self.server.key or ""
+        c = SimpleCookie()
+        try:
+            c.load(self.headers.get("Cookie") or "")
+        except Exception:
+            pass
+        have = c["clips_key"].value if "clips_key" in c else ""
+        return bool(want) and (compare_digest(have, want) or compare_digest(self._query_key(), want))
 
     def _send(self, code: int, body: bytes, ctype: str, extra: Optional[dict] = None):
         self.send_response(code)
@@ -380,8 +399,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if not self._host_ok():
-            return self._send(403, b"forbidden", "text/plain")
+            msg = (b"forbidden" if self.server.local_only else
+                   b"open the full link that `clips ui` printed (it ends in ?key=...)")
+            return self._send(403, msg, "text/plain")
         u = urlparse(self.path)
+        if self.server.key and self._query_key() and u.path == "/":          # keep the key, drop it from the URL
+            return self._send(303, b"", "text/plain", {
+                "Location": "/", "Set-Cookie": f"clips_key={self.server.key}; Path=/; HttpOnly; "
+                                               "SameSite=Strict; Max-Age=2592000"})
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         srv = self.server
         if u.path == "/":
@@ -457,7 +482,9 @@ def run_ui(args) -> int:
     srv = serve(Path(args.workdir), args.port, not args.no_browser, host=args.host)
     print(f"clips ui running at {srv.url}  (renders in {srv.renders})", file=sys.stderr)
     for u in srv.lan_urls():
-        print(f"  from other devices: {u}  (anyone on your network can use it)", file=sys.stderr)
+        print(f"  from other devices: {u}\n  (anyone with this link can use clips on this PC; if it does "
+              f"not load, allow the port in your firewall, e.g. sudo ufw allow "
+              f"{srv.server_address[1]}/tcp)", file=sys.stderr)
     print("Keep this terminal open while you use the page; Ctrl+C stops it.", file=sys.stderr)
     try:
         threading.Event().wait()
