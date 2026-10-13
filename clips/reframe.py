@@ -283,24 +283,31 @@ def is_pair_secondary(path: Path) -> bool:
 
 
 def detect_view(path: Path, info, mode: str = "auto") -> View:
-    """View kind for a source. mode: auto | off | equirect | dfisheye."""
+    """View kind for a source. mode: auto | on | off | equirect | dfisheye.
+    auto: .insv is dual fisheye, a file with equirectangular 360 metadata is equirect, anything
+    else is flat (a 2:1 frame alone is not enough: plenty of movies are 3840x1920).
+    on: every file is 360 (.insv dual fisheye, the rest equirect)."""
     path = Path(path)
     if mode == "off":
         return View()
     insv = path.suffix.lower() == ".insv"
-    if mode == "dfisheye" or (mode == "auto" and insv):
+    if mode == "dfisheye" or (mode in ("auto", "on") and insv):
         if getattr(info, "video_streams", 1) >= 2:
             return View("dfisheye", "streams")
         pair = pair_of(path)
         if pair is not None:
             return View("dfisheye", "pair", pair)
         return View("dfisheye", "sbs")
-    if mode == "equirect":
-        return View("equirect")
-    w, h = info.width or 0, info.height or 0
-    if getattr(info, "spherical", False) or (w >= 3840 and h and abs(w / h - 2.0) < 0.01):
+    if mode in ("equirect", "on") or getattr(info, "spherical", False):
         return View("equirect")
     return View()
+
+
+def looks_360(info) -> bool:
+    """2:1 and at least 3840 wide: the shape of an equirect export. Only a hint for a message,
+    never a reason to reframe."""
+    w, h = getattr(info, "width", None) or 0, getattr(info, "height", None) or 0
+    return w >= 3840 and h > 0 and abs(w / h - 2.0) < 0.01
 
 
 # ---------------------------------------------------------------- filter graphs

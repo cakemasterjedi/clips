@@ -86,6 +86,22 @@ def test_detection():
     assert RF.detect_view(RF.Path("a.mp4"), flat).kind == "flat"
 
 
+def test_2to1_movie_without_metadata_stays_flat():
+    """A 3840x1920 movie is not 360 unless its metadata says so (user's Lanterns.mkv)."""
+    movie = parse_probe("Input #0, matroska,webm, from 'Lanterns spherical.mkv':\n"
+                        "  Stream #0:0: Video: hevc (Main 10), yuv420p10le, 3840x1920, 23.98 fps\n")
+    assert not movie.spherical and RF.looks_360(movie)
+    assert RF.detect_view(RF.Path("Lanterns.mkv"), movie).kind == "flat"
+    assert RF.detect_view(RF.Path("Lanterns.mkv"), movie, "on").kind == "equirect"
+    assert RF.detect_view(RF.Path("x.insv"), movie, "on").kind == "dfisheye"
+    for meta in ("    Side data:\n      Spherical Mapping: equirectangular (0.000000/0.000000/0.000000)\n",
+                 "    Side data:\n      spherical: tiled equirectangular [0, 0, 0, 0]\n",
+                 "    Metadata:\n      ProjectionType  : equirectangular\n"):
+        assert parse_probe("  Stream #0:0: Video: h264, 1920x1080, 30 fps\n" + meta).spherical
+    cube = parse_probe("  Stream #0:0: Video: h264, 3840x1920\n    Side data:\n      spherical: cubemap\n")
+    assert not cube.spherical
+
+
 def test_v_fov_and_graph():
     assert RF.v_fov(60, (1080, 1920)) == pytest.approx(91.5, abs=0.2)
     g = RF.view_graph(RF.View("dfisheye", "pair", yaw=30), 30, "0:v", "1:v", "f", (1080, 1920))

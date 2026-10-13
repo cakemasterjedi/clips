@@ -47,7 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--duration", type=float, help="max output length in seconds")
     p.add_argument("--audio-start", type=audio_start_arg, default=None, metavar="SECONDS|auto",
                    help="start offset in the song (s), or 'auto' to pick the drop / most energetic part")
-    p.add_argument("--shuffle", action="store_true")
+    p.add_argument("--shuffle", action="store_true",
+                   help="use the clips in random order instead of file-name order")
     p.add_argument("--loop", action="store_true",
                    help="seamless replay: end on the beat that sounds most like the start and "
                         "dissolve the last shot into the first frame")
@@ -64,9 +65,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "Filters always run on the CPU")
     p.add_argument("--export-edl", metavar="FILE.edl",
                    help="also write the cut plan as a CMX3600 EDL for Resolve / Premiere")
-    p.add_argument("--360", dest="mode360", choices=("auto", "off", "equirect", "dfisheye"),
-                   default="auto", help="360 footage: auto = .insv as Insta360 dual fisheye, "
-                   "files with 360 metadata as equirectangular (default auto)")
+    p.add_argument("--360", dest="mode360", choices=("auto", "on", "off", "equirect", "dfisheye"),
+                   default="auto", help="360 footage: auto = only .insv files and files with "
+                   "360 metadata; on = treat every clip as 360; off = never (default auto)")
     p.add_argument("--yaw", type=float, help="360 view direction in degrees (default: follow motion)")
     p.add_argument("--pitch", type=float, default=0.0, help="360 view pitch in degrees (with --yaw)")
     p.add_argument("--fov", type=float, default=60.0, help="360 view horizontal field of view (deg)")
@@ -88,7 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="where --subject runs: auto = GPU if a GPU build of onnxruntime is installed")
     p.add_argument("--smart-pick", action="store_true",
                    help="give the busiest, sharpest footage to the opening shot and strongest hits")
-    p.add_argument("--seed", type=int)
+    p.add_argument("--seed", type=int,
+                   help="number for the random choices: the same seed gives the same edit")
     p.add_argument("--fit", choices=("crop", "letterbox", "blur", "track"), default=None,
                    help="how to fit non-9:16 footage (default crop)")
     p.add_argument("--sub-style", choices=("pop", "glow", "top"), default="pop",
@@ -168,7 +170,11 @@ def build_views(args, plan, sources, assigns):
     for a in assigns:
         s = sources[a.source]
         if a.source not in base:
-            base[a.source] = reframe.detect_view(s.path, s.info or probe(s.path), args.mode360)
+            info = s.info or probe(s.path)
+            base[a.source] = reframe.detect_view(s.path, info, args.mode360)
+            if args.mode360 == "auto" and not base[a.source].is360 and reframe.looks_360(info):
+                print(f"{s.path.name}: 2:1 like a 360 video but has no 360 metadata, so it is "
+                      "treated as a normal video (use --360 on if it is 360)", file=sys.stderr)
     from . import subject as SJ
     subj = SJ.options_from(args)
     if args.fit != "track" and not any(v.is360 for v in base.values()):
@@ -502,7 +508,8 @@ def build_frame_parser() -> argparse.ArgumentParser:
                     "save them next to the clip (<clip>.view.json) for renders to use.")
     p.add_argument("clip", help="360 clip (.insv: open the _00_ file of a pair; or equirect MP4)")
     p.add_argument("--360", dest="mode360", default="auto",
-                   choices=["auto", "equirect", "dfisheye"], help="force the 360 layout")
+                   choices=["auto", "on", "equirect", "dfisheye"],
+                   help="360 layout: auto (.insv or 360 metadata), on, or force one")
     p.add_argument("--port", type=int, default=8360, help="local port (default 8360)")
     p.add_argument("--no-browser", action="store_true", help="do not open the browser")
     p.add_argument("--cache", type=Path, default=None,
@@ -537,7 +544,8 @@ def build_autoframe_parser() -> argparse.ArgumentParser:
     p.add_argument("--style", metavar="PROFILE.json", help="creator profile from `clips learn`")
     p.add_argument("--fov", type=float, default=60.0, help="base horizontal field of view (deg)")
     p.add_argument("--360", dest="mode360", default="auto",
-                   choices=["auto", "equirect", "dfisheye"], help="force the 360 layout")
+                   choices=["auto", "on", "equirect", "dfisheye"],
+                   help="360 layout: auto (.insv or 360 metadata), on, or force one")
     p.add_argument("--force", action="store_true", help="replace existing keyframe files")
     p.add_argument("--subject", metavar="WHAT",
                    help="follow a subject found by a local detector instead of the most motion: "

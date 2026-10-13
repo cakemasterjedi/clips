@@ -62,6 +62,8 @@ def test_render_argv_sound_captions_options(tmp_path, media):
     flags = {o["flag"]: o for o in ui.option_list()}
     assert "--music-in" in flags and flags["--music-in"]["choices"] == ["rise", "drop"]
     assert "--audio" not in flags and "--zoom" not in flags and flags["--intro"]["repeat"]
+    assert flags["--360"]["group"] == "360 video" and "on" in flags["--360"]["choice_labels"]
+    assert all(o["label"] and o["desc"] for o in flags.values())
 
 
 def test_upload_and_mkdir(tmp_path):
@@ -305,7 +307,10 @@ def test_page_live_log(tmp_path, media):
             assert not pg.is_visible("#audio") and pg.is_visible("#bpm")
             assert not pg.is_visible("#subs")
             pg.click("#more summary")
-            pg.select_option("#opt-add", "--music-in")
+            pg.click("#opt-toggle")
+            assert "Dialogue intro" in pg.text_content("#opt-list") and "How the song comes in" in pg.inner_text("#opt-list")
+            pg.click("#opt-list button[data-flag='--music-in']")
+            assert not pg.is_visible("#opt-list") and "How the song comes in" in pg.inner_text("#opts")
             pg.select_option("#opts select", "drop")
             pg.click("#render")
             pg.wait_for_function("document.querySelectorAll('pre.log div').length > 40")
@@ -389,3 +394,14 @@ def test_update_job(tmp_path, monkeypatch):
         assert req(srv, "POST", "/api/update", {})[0] == 400
     finally:
         srv.shutdown()
+
+
+def test_gpu_busy_reads_amd_sysfs(tmp_path, monkeypatch):
+    for card, val in (("card0", "12\n"), ("card1", "57\n")):
+        (tmp_path / card / "device").mkdir(parents=True)
+        (tmp_path / card / "device" / "gpu_busy_percent").write_text(val)
+    (tmp_path / "card1-DP-1").mkdir()                        # connector dirs are ignored
+    assert ui.gpu_busy(tmp_path) == 57
+    assert ui.gpu_busy(tmp_path / "missing") is None
+    (tmp_path / "card1" / "device" / "gpu_busy_percent").write_text("garbage")
+    assert ui.gpu_busy(tmp_path) == 12

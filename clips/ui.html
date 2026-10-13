@@ -12,6 +12,7 @@
   header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
   header h1 { font-size:18px; margin:0; color:var(--accent); }
   header span { color:var(--muted); font-size:12px; word-break:break-all; }
+  @media (max-width:600px) { #workdir { flex-basis:100%; order:5; } }
   main { display:grid; grid-template-columns:minmax(320px, 520px) minmax(0, 1fr); gap:16px; padding:16px; }
   @media (max-width:900px) { main { grid-template-columns:minmax(0, 1fr); padding:10px; } }
   .box { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:16px; }
@@ -26,7 +27,11 @@
   .row > button, .row > .st, .row > a { flex:none; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:0 10px; }
   .checks { display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:4px 10px; margin-top:8px; }
-  .checks label { display:flex; gap:6px; align-items:center; color:var(--text); font-size:13px; margin:0; cursor:pointer; }
+  .checks label { display:flex; gap:6px; align-items:flex-start; color:var(--text); font-size:13px; margin:0; cursor:pointer; }
+  .checks label input { margin-top:3px; flex:none; }
+  .checks small, .help { display:block; color:var(--muted); font-size:11px; line-height:1.3; }
+  .help { margin-top:2px; }
+  .checks.desc { grid-template-columns:repeat(auto-fill, minmax(210px, 1fr)); gap:8px 12px; }
   button { background:#2a2a2a; color:var(--text); border:1px solid var(--line); border-radius:4px;
            padding:6px 12px; font:inherit; cursor:pointer; }
   button:hover { border-color:var(--accent); }
@@ -38,9 +43,18 @@
   .err { color:var(--bad); min-height:1.2em; margin-top:6px; }
   .hint { color:var(--muted); font-size:12px; }
   .hidden { display:none !important; }
-  #opts .opt { display:flex; gap:6px; align-items:center; margin-top:6px; }
-  #opts .opt code { flex:none; min-width:110px; }
-  #opts .opt input, #opts .opt select { flex:1; }
+  #opts .opt { border:1px solid var(--line); border-radius:6px; padding:6px 8px; margin-top:6px; }
+  #opts .opt .row { gap:8px; }
+  #opts .opt .row > b { flex:1; }
+  #opts .opt input, #opts .opt select { margin-top:4px; }
+  code.flag { color:var(--muted); font-size:11px; }
+  #opt-menu { position:relative; }
+  #opt-toggle { width:100%; text-align:left; }
+  #opt-list { border:1px solid var(--line); border-radius:6px; margin-top:4px; max-height:60vh; overflow:auto; background:#0c0c0c; }
+  #opt-list .grp { padding:6px 10px 2px; color:var(--accent); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
+  #opt-list button { display:block; width:100%; text-align:left; border:0; border-radius:0; background:none; padding:6px 10px; }
+  #opt-list button:hover, #opt-list button:focus { background:#2a2a2a; }
+  #opt-list button small { display:block; color:var(--muted); font-size:11px; line-height:1.3; }
   .job { border-top:1px solid var(--line); padding:10px 0; }
   .job:first-child { border-top:0; }
   .job .title { flex:1; word-break:break-all; font-weight:600; }
@@ -111,9 +125,11 @@
           <option value="0.6">Wider</option>
           <option value="0.45">Much wider</option>
           <option value="0.32">Whole frame (blurred bars)</option>
-        </select></div>
-      <div><label>Style profile</label><select id="style"><option value="">none</option></select></div>
-      <div><label>Variations</label><input type="number" id="variations" min="1" max="10" value="1"></div>
+        </select><span class="help">How much of each clip shows. Wider adds a blurred copy behind it.</span></div>
+      <div><label>Style profile</label><select id="style"><option value="">none</option></select>
+        <span class="help">Edit like a creator you taught it with Learn below.</span></div>
+      <div><label>Variations</label><input type="number" id="variations" min="1" max="10" value="1">
+        <span class="help">Make several versions with different clips to pick from.</span></div>
     </div>
 
     <label>Captions</label>
@@ -126,38 +142,45 @@
       </div>
     </div>
 
-    <div class="checks">
-      <label><input type="checkbox" id="preview" checked> preview (fast draft)</label>
-      <label><input type="checkbox" id="smart_pick"> smart pick</label>
-      <label><input type="checkbox" id="loop"> loop</label>
-      <label><input type="checkbox" id="ramp"> speed ramps</label>
-      <label><input type="checkbox" id="punch"> punch zoom</label>
-      <label><input type="checkbox" id="flash"> flash</label>
-      <label><input type="checkbox" id="shuffle"> shuffle</label>
-      <label><input type="checkbox" id="auto_frame"> auto frame (360)</label>
+    <div class="checks desc">
+      <label><input type="checkbox" id="preview" checked><span>preview (fast draft)<small>Quick low-quality render to check the edit. Untick for the final.</small></span></label>
+      <label><input type="checkbox" id="smart_pick"><span>smart pick<small>Puts the busiest, sharpest clips first and on the big beats.</small></span></label>
+      <label><input type="checkbox" id="loop"><span>loop<small>Ends so it flows back into the start when replayed.</small></span></label>
+      <label><input type="checkbox" id="ramp"><span>speed ramps<small>Slow motion that snaps back to speed on the biggest hits.</small></span></label>
+      <label><input type="checkbox" id="punch"><span>punch zoom<small>Quick zoom-in on strong beats.</small></span></label>
+      <label><input type="checkbox" id="flash"><span>flash<small>White flash on the strongest beats.</small></span></label>
+      <label><input type="checkbox" id="shuffle"><span>shuffle<small>Clips in random order instead of by file name.</small></span></label>
+      <label><input type="checkbox" id="auto_frame"><span>auto frame (360)<small>Aims 360 clips like the chosen style's creator. Needs a style profile.</small></span></label>
     </div>
     <div class="grid2">
       <div><label>Follow subject</label>
         <select id="subject"><option value="">off (follow motion)</option><option>auto</option><option>biggest</option>
-          <option>person</option><option>dog</option><option>cat</option><option>car</option><option>bicycle</option><option>motorcycle</option></select></div>
-      <div><label>Subject description (Ollama)</label><input type="text" id="subject_desc" placeholder="the guy in the red jacket"></div>
+          <option>person</option><option>dog</option><option>cat</option><option>car</option><option>bicycle</option><option>motorcycle</option></select>
+        <span class="help">Keeps this in frame instead of whatever moves most.</span></div>
+      <div><label>Subject description (Ollama)</label><input type="text" id="subject_desc" placeholder="the guy in the red jacket">
+        <span class="help">Picks which one to follow, in words. Needs Ollama running.</span></div>
     </div>
     <details id="more">
       <summary>More options</summary>
       <div class="grid2">
-        <div><label>FPS</label><select id="fps"><option>30</option><option>60</option></select></div>
-        <div><label>Fit</label><select id="fit"><option value="">default (crop)</option><option>crop</option><option>letterbox</option><option>blur</option><option>track</option></select></div>
-        <div><label>Seed</label><input type="number" id="seed"></div>
+        <div><label>FPS</label><select id="fps"><option>30</option><option>60</option></select>
+          <span class="help">Frames per second. 60 is smoother but slower to render.</span></div>
+        <div><label>Fit</label><select id="fit"><option value="">default (crop)</option><option value="crop">crop (fill the screen)</option><option value="letterbox">letterbox (black bars)</option><option value="blur">blur (blurred bars)</option><option value="track">track (crop follows the action)</option></select>
+          <span class="help">How wide clips fit the tall frame.</span></div>
+        <div><label>Seed</label><input type="number" id="seed" placeholder="random">
+          <span class="help">Same number = same edit again. Blank = new mix each time.</span></div>
         <div><label>GPU (decode + encode)</label>
           <select id="gpu"><option value="">auto (GPU if it works)</option><option value="vaapi">on (VAAPI, required)</option><option value="off">off (CPU only)</option></select>
-          <div class="hint" id="gpu-hint">checking GPU…</div></div>
+          <div class="hint" id="gpu-hint">checking GPU…</div>
+          <span class="help">Uses the graphics card to read and write video, which is faster.</span></div>
       </div>
-      <div class="checks">
-        <label><input type="checkbox" id="no_intro"> no dialogue intro</label>
-        <label><input type="checkbox" id="no_loudnorm"> no loudness norm</label>
+      <div class="checks desc">
+        <label><input type="checkbox" id="no_intro"><span>no dialogue intro<small>Don't open with someone talking from your clips. Music from the start.</small></span></label>
+        <label><input type="checkbox" id="no_loudnorm"><span>no loudness norm<small>Skip evening out the volume to TikTok level. Saves a little time.</small></span></label>
       </div>
-      <label>Add an option</label>
-      <select id="opt-add"><option value="">choose…</option></select>
+      <label>More settings</label>
+      <div id="opt-menu"><button type="button" id="opt-toggle" aria-expanded="false">＋ Add a setting…</button>
+        <div id="opt-list" class="hidden"></div></div>
       <div id="opts"></div>
       <label>Extra flags as text (optional)</label>
       <input type="text" id="extra" placeholder="--music-in drop --intro-max 6">
@@ -259,35 +282,46 @@ function sync() {
 }
 document.addEventListener("change", (e) => { if (!e.target.closest("#picker")) { sync(); save(); } });
 
-// ---- "add an option": every other clips flag, picked from a list
+// ---- "add a setting": every other clips flag, grouped, with a plain name and a description
+function choiceLabel(o, x) { return (o.choice_labels && o.choice_labels[x]) || x; }
 function drawOptions() {
-  const add = $("opt-add");
   const used = new Set(chosen.map((c) => c[0]));
-  add.innerHTML = '<option value="">choose…</option>' + options.filter((o) => o.repeat || !used.has(o.flag))
-    .map((o) => `<option value="${esc(o.flag)}" title="${esc(o.help)}">${esc(o.flag)} — ${esc(o.help.slice(0, 70))}</option>`).join("");
+  let html = "", group = null;
+  for (const o of options) {
+    if (!o.repeat && used.has(o.flag)) continue;
+    if (o.group !== group) { group = o.group; html += `<div class="grp">${esc(group)}</div>`; }
+    html += `<button type="button" data-flag="${esc(o.flag)}"><b>${esc(o.label)}</b> <code class="flag">${esc(o.flag)}</code><small>${esc(o.desc)}</small></button>`;
+  }
+  $("opt-list").innerHTML = html || '<div class="hint" style="padding:6px 10px">All settings added.</div>';
   const box = $("opts");
   box.innerHTML = "";
   chosen.forEach((c, i) => {
-    const o = options.find((x) => x.flag === c[0]) || {kind: "value", help: ""};
+    const o = options.find((x) => x.flag === c[0]) || {kind: "value", label: c[0], desc: "", flag: c[0]};
     const row = document.createElement("div");
     row.className = "opt";
     let ctl = "";
-    if (o.kind === "choice") ctl = `<select>${o.choices.map((x) => `<option ${x === c[1] ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>`;
+    if (o.kind === "choice") ctl = `<select>${o.choices.map((x) => `<option value="${esc(x)}" ${x === c[1] ? "selected" : ""}>${esc(choiceLabel(o, x))}</option>`).join("")}</select>`;
     else if (o.kind === "value") ctl = `<input type="text" placeholder="${esc(o.metavar || "value")}" value="${esc(c[1] || "")}">`;
-    else ctl = '<span class="hint" style="flex:1">on</span>';
-    row.innerHTML = `<code title="${esc(o.help)}">${esc(c[0])}</code>${ctl}<button class="small">✕</button>`;
+    row.innerHTML = `<div class="row"><b>${esc(o.label || c[0])}</b><code class="flag">${esc(c[0])}</code><button type="button" class="small" title="remove">✕</button></div>`
+      + ctl + (o.desc ? `<span class="help">${esc(o.desc)}</span>` : "");
     const inp = row.querySelector("input,select");
     if (inp) inp.oninput = inp.onchange = () => { c[1] = inp.value; save(); };
     row.querySelector("button").onclick = () => { chosen.splice(i, 1); drawOptions(); save(); };
     box.appendChild(row);
   });
 }
-$("opt-add").onchange = (e) => {
-  e.stopPropagation();
-  const o = options.find((x) => x.flag === $("opt-add").value);
+function showOptList(on) {
+  $("opt-list").classList.toggle("hidden", !on);
+  $("opt-toggle").setAttribute("aria-expanded", on ? "true" : "false");
+}
+$("opt-toggle").onclick = () => showOptList($("opt-list").classList.contains("hidden"));
+$("opt-list").onclick = (e) => {
+  const btn = e.target.closest("button[data-flag]");
+  if (!btn) return;
+  const o = options.find((x) => x.flag === btn.dataset.flag);
   if (!o) return;
   chosen.push([o.flag, o.kind === "bool" ? true : o.kind === "choice" ? o.choices[0] : ""]);
-  drawOptions(); save();
+  showOptList(false); drawOptions(); save();
 };
 
 // ---- file picker with new folder + upload (the server lists folders; a page cannot see real paths)
@@ -446,6 +480,7 @@ function updateJob(j) {
     if (j.eta != null) beat += ` · about <b>${dur(j.eta)}</b> left`;
     else if (showBar) beat += " · time left: estimating";
     if (busy != null) beat += ` · CPU <b>${Math.min(100, Math.round(busy * 100 / ncpu))}%</b> of the PC`;
+    if (gpuBusy != null && j.kind !== "frame") beat += ` · GPU <b>${gpuBusy}%</b>`;
     if (j.idle > 120 && working === false) beat += ` <span class="warn">· no output and no CPU use for a while: it may be stuck</span>`;
     else if (j.idle > 30) beat += " · still working (long steps print nothing)";
   } else if (j.status === "queued") beat = "waiting for the job before it";
@@ -502,12 +537,12 @@ function renderProfiles(items) {
   const want = ['<option value="">none</option>'].concat(items.map((p) => `<option value="${esc(p.path)}">${esc(p.name)}</option>`)).join("");
   if (sel.innerHTML !== want) { sel.innerHTML = want; sel.value = cur; }
 }
-let boot = null, ncpu = 1;
+let boot = null, ncpu = 1, gpuBusy = null;
 async function refresh() {
   try {
     const s = await fetch("/api/state").then((r) => r.json());
     if (boot && s.boot !== boot) { location.reload(); return; }     // restarted after an update
-    boot = s.boot; ncpu = s.ncpu || 1;
+    boot = s.boot; ncpu = s.ncpu || 1; gpuBusy = s.gpu_busy;
     $("workdir").textContent = "renders and styles in " + s.workdir;
     $("version").textContent = s.version ? "version " + s.version : "";
     $("update").classList.toggle("hidden", !s.can_update);
