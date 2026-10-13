@@ -324,8 +324,9 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
 
         print(f"rendering {len(segs)} shots with {workers} workers...", file=sys.stderr)
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for _ in ex.map(job, range(len(segs))):
-                pass
+            for k, _ in enumerate(ex.map(job, range(len(segs))), 1):
+                if not sys.stderr.isatty():         # `clips ui` reads this for its progress bar
+                    print(f"shot {k}/{len(segs)}", file=sys.stderr, flush=True)
         lst = tmpd / "list.txt"
         lst.write_text("".join(concat_line(s) for s in segs), encoding="utf-8")
         print("final pass...", file=sys.stderr)

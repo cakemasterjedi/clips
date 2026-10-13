@@ -91,6 +91,46 @@ def current_views(clip: Path) -> dict:
     return RF.keyframes_json(keys)
 
 
+def send_file(h, f: Path, ctype: str, extra: Optional[dict] = None):
+    """Serve a file with Range support (the browser seeks videos with byte ranges)."""
+    size = f.stat().st_size
+    rng = h.headers.get("Range")
+    start, end, code = 0, size - 1, 200
+    m = re.match(r"bytes=(\d*)-(\d*)$", rng or "")
+    if m and (m.group(1) or m.group(2)):
+        if m.group(1):
+            start = int(m.group(1))
+            end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+        else:                                         # suffix range: last N bytes
+            start = max(0, size - int(m.group(2)))
+        if start > end or start >= size:
+            return h._send(416, b"", "text/plain", {"Content-Range": f"bytes */{size}"})
+        code = 206
+    h.send_response(code)
+    h.send_header("Content-Type", ctype)
+    h.send_header("Accept-Ranges", "bytes")
+    h.send_header("Content-Length", str(end - start + 1))
+    if code == 206:
+        h.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+    for k, v in (extra or {}).items():
+        h.send_header(k, v)
+    h.end_headers()
+    if h.command == "HEAD":
+        return
+    with open(f, "rb") as fh:
+        fh.seek(start)
+        left = end - start + 1
+        try:
+            while left > 0:
+                chunk = fh.read(min(1 << 16, left))
+                if not chunk:
+                    break
+                h.wfile.write(chunk)
+                left -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass                                      # the browser seeks by hanging up
+
+
 class FrameServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -148,41 +188,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found", "text/plain")
 
     def _video(self):
-        f = self.server.proxy
-        size = f.stat().st_size
-        rng = self.headers.get("Range")
-        start, end, code = 0, size - 1, 200
-        m = re.match(r"bytes=(\d*)-(\d*)$", rng or "")
-        if m and (m.group(1) or m.group(2)):
-            if m.group(1):
-                start = int(m.group(1))
-                end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
-            else:                                         # suffix range: last N bytes
-                start = max(0, size - int(m.group(2)))
-            if start > end or start >= size:
-                return self._send(416, b"", "text/plain", {"Content-Range": f"bytes */{size}"})
-            code = 206
-        self.send_response(code)
-        self.send_header("Content-Type", "video/webm")
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Length", str(end - start + 1))
-        if code == 206:
-            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-        self.end_headers()
-        if self.command == "HEAD":
-            return
-        with open(f, "rb") as fh:
-            fh.seek(start)
-            left = end - start + 1
-            try:
-                while left > 0:
-                    chunk = fh.read(min(1 << 16, left))
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    left -= len(chunk)
-            except (BrokenPipeError, ConnectionResetError):
-                pass                                      # the browser seeks by hanging up
+        send_file(self, self.server.proxy, "video/webm")
 
     def do_POST(self):
         if not self._host_ok() or self.headers.get("X-Clips") != "1":

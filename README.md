@@ -25,6 +25,19 @@ Put a few phone clips in a folder and pick a song (mp3/m4a/wav):
 Add `--subs captions.srt` for burned-in captions and `--variations 3` for three versions.
 Keep footage and renders outside the repo folder.
 
+## Web UI
+
+    clips ui                  # opens http://127.0.0.1:8361/ in your browser
+
+Pick a footage folder and a song, set the length, song start, style profile and options
+(smart pick, loop, speed ramps, preview, variations, subject to follow, auto frame), and hit
+Render. Renders queue and run one at a time with a live progress bar and log; finished videos
+play in the page and can be downloaded. You can also learn a creator style from links (it
+shows up in the style list when done) and open `clips frame` on a 360 clip. Renders and
+styles are kept in `~/Videos/clips` (`--workdir` to change, `--port`, `--no-browser`).
+Anything without its own control goes in "Extra flags". The page only listens on this
+machine.
+
 ## Usage
 
     clips INPUT --audio SONG [--subs FILE.srt|.ass] -o OUT.mp4 \

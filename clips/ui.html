@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clips</title>
+<style>
+  :root { --bg:#111; --panel:#1b1b1b; --line:#333; --text:#ddd; --muted:#888; --accent:#ffb000;
+          --ok:#5fd38d; --bad:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, sans-serif; }
+  header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; }
+  header h1 { font-size:18px; margin:0; color:var(--accent); }
+  header span { color:var(--muted); font-size:12px; }
+  main { display:grid; grid-template-columns:minmax(320px, 520px) 1fr; gap:16px; padding:16px; }
+  @media (max-width:900px) { main { grid-template-columns:1fr; } }
+  .box { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:16px; }
+  h2 { font-size:14px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+  label { display:block; margin:8px 0 2px; color:var(--muted); font-size:12px; }
+  input[type=text], input[type=number], select, textarea {
+    width:100%; background:#0c0c0c; color:var(--text); border:1px solid var(--line); border-radius:4px;
+    padding:6px 8px; font:inherit; }
+  textarea { min-height:70px; resize:vertical; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .row > * { flex:1; }
+  .row > button { flex:none; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:0 10px; }
+  .checks { display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:4px 10px; margin-top:8px; }
+  .checks label { display:flex; gap:6px; align-items:center; color:var(--text); font-size:13px; margin:0; cursor:pointer; }
+  button { background:#2a2a2a; color:var(--text); border:1px solid var(--line); border-radius:4px;
+           padding:6px 12px; font:inherit; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.go { background:var(--accent); color:#111; border:0; font-weight:600; padding:8px 18px; }
+  button.small { padding:2px 8px; font-size:12px; }
+  details { margin-top:10px; }
+  summary { cursor:pointer; color:var(--muted); }
+  .err { color:var(--bad); min-height:1.2em; margin-top:6px; }
+  .hint { color:var(--muted); font-size:12px; }
+  .job { border-top:1px solid var(--line); padding:8px 0; }
+  .job:first-child { border-top:0; }
+  .job .top { display:flex; gap:8px; align-items:center; }
+  .job .title { flex:1; word-break:break-all; }
+  .st { font-size:12px; padding:1px 6px; border-radius:3px; background:#2a2a2a; }
+  .st.done { color:var(--ok); } .st.failed { color:var(--bad); } .st.running { color:var(--accent); }
+  .bar { height:4px; background:#2a2a2a; border-radius:2px; margin:6px 0; overflow:hidden; }
+  .bar i { display:block; height:100%; background:var(--accent); width:0; transition:width .4s; }
+  pre { background:#0c0c0c; border:1px solid var(--line); border-radius:4px; padding:6px; margin:4px 0 0;
+        max-height:180px; overflow:auto; font-size:11px; white-space:pre-wrap; word-break:break-all; }
+  #renders { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:12px; }
+  .vid { background:#0c0c0c; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .vid video { width:100%; aspect-ratio:9/16; display:block; background:#000; }
+  .vid div { padding:6px 8px; font-size:12px; display:flex; gap:6px; align-items:center; }
+  .vid div span { flex:1; word-break:break-all; }
+  a { color:var(--accent); }
+  dialog { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:8px;
+           width:min(640px, 92vw); padding:12px; }
+  dialog::backdrop { background:#000a; }
+  #pk-list { max-height:55vh; overflow:auto; border:1px solid var(--line); border-radius:4px; margin:8px 0; }
+  #pk-list div { padding:5px 8px; cursor:pointer; display:flex; gap:8px; }
+  #pk-list div:hover { background:#2a2a2a; }
+  #pk-list .d::before { content:"📁"; } #pk-list .f::before { content:"🎞"; }
+  #pk-list .f.sel { background:#3a3000; }
+  #pk-path { font-family:monospace; font-size:12px; word-break:break-all; }
+</style>
+</head>
+<body>
+<header><h1>clips</h1><span id="workdir"></span></header>
+<main>
+<section>
+  <div class="box">
+    <h2>New edit</h2>
+    <label>Footage (folder or clip)</label>
+    <div class="row"><input type="text" id="input" placeholder="/home/you/footage"><button data-pick="input" data-kind="video" data-dir="1">Browse</button></div>
+    <label>Song</label>
+    <div class="row"><input type="text" id="audio" placeholder="/home/you/song.mp3"><button data-pick="audio" data-kind="audio">Browse</button></div>
+    <div class="grid2">
+      <div><label>Length (s, blank = whole song)</label><input type="number" id="duration" min="1" step="0.5" value="15"></div>
+      <div><label>Song start</label>
+        <div class="row"><select id="start_mode"><option value="auto">auto (the drop)</option><option value="">beginning</option><option value="at">at seconds…</option></select>
+        <input type="number" id="start_at" min="0" step="0.1" placeholder="s" style="display:none"></div></div>
+      <div><label>Style profile</label><select id="style"><option value="">none</option></select></div>
+      <div><label>Variations</label><input type="number" id="variations" min="1" max="10" value="1"></div>
+    </div>
+    <div class="checks">
+      <label><input type="checkbox" id="preview" checked> preview (fast draft)</label>
+      <label><input type="checkbox" id="smart_pick"> smart pick</label>
+      <label><input type="checkbox" id="loop"> loop</label>
+      <label><input type="checkbox" id="ramp"> speed ramps</label>
+      <label><input type="checkbox" id="punch"> punch zoom</label>
+      <label><input type="checkbox" id="flash"> flash</label>
+      <label><input type="checkbox" id="shuffle"> shuffle</label>
+      <label><input type="checkbox" id="auto_frame"> auto frame (360)</label>
+    </div>
+    <div class="grid2">
+      <div><label>Follow subject</label>
+        <select id="subject"><option value="">off (follow motion)</option><option>auto</option><option>biggest</option>
+          <option>person</option><option>dog</option><option>cat</option><option>car</option><option>bicycle</option><option>motorcycle</option></select></div>
+      <div><label>Subject description (Ollama)</label><input type="text" id="subject_desc" placeholder="the guy in the red jacket"></div>
+    </div>
+    <details>
+      <summary>More options</summary>
+      <div class="grid2">
+        <div><label>FPS</label><select id="fps"><option>30</option><option>60</option></select></div>
+        <div><label>Fit</label><select id="fit"><option value="">default</option><option>crop</option><option>letterbox</option><option>blur</option><option>track</option></select></div>
+        <div><label>Caption style (.srt)</label><select id="sub_style"><option value="">pop</option><option>glow</option><option>top</option></select></div>
+        <div><label>Seed</label><input type="number" id="seed"></div>
+      </div>
+      <label>Captions (.srt / .ass, optional)</label>
+      <div class="row"><input type="text" id="subs"><button data-pick="subs" data-kind="subs">Browse</button></div>
+      <div class="checks">
+        <label><input type="checkbox" id="word_reveal"> word reveal</label>
+        <label><input type="checkbox" id="no_intro"> no dialogue intro</label>
+        <label><input type="checkbox" id="no_loudnorm"> no loudness norm</label>
+      </div>
+      <label>Extra flags (anything from <code>clips --help</code>)</label>
+      <input type="text" id="extra" placeholder="--music-in drop --intro-max 6">
+    </details>
+    <label>Output name</label>
+    <input type="text" id="name" placeholder="blank = edit-date-time">
+    <div class="row" style="margin-top:12px"><button class="go" id="render">Render</button><span class="hint">Renders queue and run one at a time.</span></div>
+    <div class="err" id="render-err"></div>
+  </div>
+
+  <div class="box">
+    <h2>Learn a creator style</h2>
+    <label>Links or video paths (one per line)</label>
+    <textarea id="links" placeholder="https://www.tiktok.com/@creator/video/..."></textarea>
+    <label>Style name</label>
+    <div class="row"><input type="text" id="learn_name" placeholder="creator"><button class="go" id="learn">Learn</button></div>
+    <div class="err" id="learn-err"></div>
+  </div>
+
+  <div class="box">
+    <h2>Frame a 360 clip by hand</h2>
+    <div class="row"><input type="text" id="clip" placeholder=".insv or 360 mp4"><button data-pick="clip" data-kind="video">Browse</button><button class="go" id="frame">Open</button></div>
+    <div class="hint">Opens <code>clips frame</code> in a new tab once its preview is built. Keyframes save next to the clip and renders use them.</div>
+    <div class="err" id="frame-err"></div>
+  </div>
+</section>
+
+<section>
+  <div class="box"><h2>Jobs</h2><div id="jobs"><div class="hint">Nothing yet.</div></div></div>
+  <div class="box"><h2>Renders</h2><div id="renders"></div></div>
+</section>
+</main>
+
+<dialog id="picker">
+  <div class="row"><b id="pk-title" style="flex:1">Pick</b><button class="small" id="pk-home">Home</button><button class="small" id="pk-up">Up</button></div>
+  <div id="pk-path"></div>
+  <div id="pk-list"></div>
+  <div class="row"><span class="hint" id="pk-hint"></span><button id="pk-cancel">Cancel</button><button class="go" id="pk-ok">Use this folder</button></div>
+</dialog>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const mb = (n) => (n / 1048576).toFixed(1) + " MB";
+
+async function post(url, body) {
+  const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json", "X-Clips": "1"},
+                              body: JSON.stringify(body || {})});
+  const j = await r.json().catch(() => ({error: r.statusText}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+// remember the form between visits
+const KEEP = ["input","audio","duration","start_mode","start_at","style","variations","preview","smart_pick","loop",
+  "ramp","punch","flash","shuffle","auto_frame","subject","subject_desc","fps","fit","sub_style","seed","subs",
+  "word_reveal","no_intro","no_loudnorm","extra","clip"];
+function save() {
+  const v = {};
+  for (const k of KEEP) v[k] = $(k).type === "checkbox" ? $(k).checked : $(k).value;
+  try { localStorage.setItem("clips-ui", JSON.stringify(v)); } catch (e) {}
+}
+function load() {
+  let v = {};
+  try { v = JSON.parse(localStorage.getItem("clips-ui") || "{}"); } catch (e) {}
+  for (const k of KEEP) if (k in v) { if ($(k).type === "checkbox") $(k).checked = v[k]; else $(k).value = v[k]; }
+  $("start_at").style.display = $("start_mode").value === "at" ? "" : "none";
+}
+$("start_mode").onchange = () => { $("start_at").style.display = $("start_mode").value === "at" ? "" : "none"; };
+document.addEventListener("change", save);
+
+// ---- file picker (the server lists folders; a browser page cannot see real paths)
+let pk = {target: null, kind: "", dir: false, path: "", sel: null};
+async function pkOpen(path) {
+  const r = await fetch(`/api/ls?kind=${pk.kind}&path=${encodeURIComponent(path || "")}`).then((r) => r.json());
+  pk.path = r.path; pk.parent = r.parent; pk.home = r.home || pk.home; pk.sel = null;
+  $("pk-path").textContent = r.path + (r.error ? "  (" + r.error + ")" : "");
+  const list = $("pk-list");
+  list.innerHTML = "";
+  for (const d of r.dirs) {
+    const el = document.createElement("div"); el.className = "d"; el.textContent = d;
+    el.onclick = () => pkOpen(r.path.replace(/\/$/, "") + "/" + d);
+    list.appendChild(el);
+  }
+  for (const f of r.files) {
+    const el = document.createElement("div"); el.className = "f";
+    el.innerHTML = `<span style="flex:1">${esc(f.name)}</span><span class="hint">${mb(f.size)}</span>`;
+    const full = r.path.replace(/\/$/, "") + "/" + f.name;
+    el.onclick = () => { for (const x of list.querySelectorAll(".sel")) x.classList.remove("sel");
+                         el.classList.add("sel"); pk.sel = full; $("pk-ok").textContent = "Use this file"; };
+    el.ondblclick = () => { pk.sel = full; pkDone(); };
+    list.appendChild(el);
+  }
+  $("pk-ok").textContent = pk.dir ? "Use this folder" : "Use this file";
+  $("pk-ok").disabled = !pk.dir;
+  list.onclick = () => { $("pk-ok").disabled = !(pk.dir || pk.sel); };
+  $("pk-hint").textContent = pk.dir ? `${r.files.length} clips here` : "";
+}
+function pkDone() {
+  const v = pk.sel || (pk.dir ? pk.path : null);
+  if (!v) return;
+  $(pk.target).value = v; save(); $("picker").close();
+}
+for (const b of document.querySelectorAll("[data-pick]")) {
+  b.onclick = () => {
+    pk.target = b.dataset.pick; pk.kind = b.dataset.kind; pk.dir = !!b.dataset.dir;
+    $("pk-title").textContent = pk.dir ? "Pick a footage folder (or one clip)" : "Pick a file";
+    const cur = $(pk.target).value;
+    $("picker").showModal();
+    pkOpen(cur);
+  };
+}
+$("pk-up").onclick = () => pkOpen(pk.parent);
+$("pk-home").onclick = () => pkOpen(pk.home || "");
+$("pk-cancel").onclick = () => $("picker").close();
+$("pk-ok").onclick = pkDone;
+
+// ---- actions
+function form() {
+  const f = {};
+  for (const k of ["input","audio","duration","style","variations","subject","subject_desc","fps","fit",
+                   "sub_style","seed","subs","extra","name"]) f[k] = $(k).value.trim();
+  for (const k of ["preview","smart_pick","loop","ramp","punch","flash","shuffle","auto_frame","word_reveal",
+                   "no_intro","no_loudnorm"]) f[k] = $(k).checked;
+  const m = $("start_mode").value;
+  f.audio_start = m === "at" ? $("start_at").value.trim() : m;
+  if (f.fps === "30") f.fps = "";
+  return f;
+}
+async function act(btn, errId, url, body) {
+  $(errId).textContent = "";
+  btn.disabled = true;
+  try { await post(url, body); refresh(); }
+  catch (e) { $(errId).textContent = e.message; }
+  finally { btn.disabled = false; }
+}
+$("render").onclick = () => act($("render"), "render-err", "/api/render", form());
+$("learn").onclick = () => act($("learn"), "learn-err", "/api/learn", {links: $("links").value, name: $("learn_name").value});
+$("frame").onclick = () => act($("frame"), "frame-err", "/api/frame", {clip: $("clip").value.trim()});
+
+// ---- live state
+const opened = new Set();
+let lastRenders = "";
+function renderJobs(jobs) {
+  const box = $("jobs");
+  const open = new Set([...box.querySelectorAll("details[open]")].map((d) => d.dataset.id));
+  if (!jobs.length) { box.innerHTML = '<div class="hint">Nothing yet.</div>'; return; }
+  box.innerHTML = jobs.map((j) => {
+    const pct = Math.round(j.progress * 100);
+    const live = j.status === "running" || j.status === "queued";
+    const outs = j.outputs.map((o) => `<a href="/renders/${encodeURIComponent(o)}" target="_blank">${esc(o)}</a>`).join(" ");
+    const link = j.url ? `<a href="${esc(j.url)}" target="_blank">open framing tool</a>` : "";
+    return `<div class="job">
+      <div class="top"><span class="title">${esc(j.title)}</span><span class="st ${j.status}">${j.status}${j.kind === "render" && live ? " " + pct + "%" : ""}</span>
+        ${live ? `<button class="small" data-cancel="${j.id}">${j.kind === "frame" && j.status === "running" ? "Stop" : "Cancel"}</button>` : ""}</div>
+      ${j.kind === "render" && live ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ""}
+      <div>${link} ${j.status === "done" ? outs : ""}</div>
+      <details data-id="${j.id}" ${open.has(String(j.id)) || j.status === "failed" ? "open" : ""}><summary>log</summary>
+        <pre>${esc(j.command)}\n\n${esc(j.log.join("\n"))}</pre></details></div>`;
+  }).join("");
+  for (const b of box.querySelectorAll("[data-cancel]")) b.onclick = () => post(`/api/jobs/${b.dataset.cancel}/cancel`).then(refresh);
+  for (const j of jobs) if (j.url && j.status === "running" && !opened.has(j.id)) { opened.add(j.id); window.open(j.url, "_blank"); }
+}
+function renderList(items) {
+  const key = items.map((r) => r.name + r.mtime).join("|");
+  if (key === lastRenders) return;
+  lastRenders = key;
+  $("renders").innerHTML = items.length ? items.map((r) => {
+    const u = "/renders/" + encodeURIComponent(r.name);
+    return `<div class="vid"><video src="${u}" controls preload="metadata" playsinline></video>
+      <div><span>${esc(r.name)}<br><span class="hint">${mb(r.size)}</span></span><a href="${u}?dl=1">download</a></div></div>`;
+  }).join("") : '<div class="hint">Finished renders show up here.</div>';
+}
+function renderProfiles(items) {
+  const sel = $("style"), cur = sel.value;
+  const want = ['<option value="">none</option>'].concat(items.map((p) => `<option value="${esc(p.path)}">${esc(p.name)}</option>`)).join("");
+  if (sel.innerHTML !== want) { sel.innerHTML = want; sel.value = cur; }
+}
+async function refresh() {
+  try {
+    const s = await fetch("/api/state").then((r) => r.json());
+    $("workdir").textContent = "renders and styles in " + s.workdir;
+    renderProfiles(s.profiles);
+    renderJobs(s.jobs);
+    renderList(s.renders);
+  } catch (e) {}
+}
+load();
+refresh().then(load);
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>
