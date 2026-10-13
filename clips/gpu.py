@@ -87,6 +87,20 @@ def resolve(mode: str) -> Optional[Gpu]:
     return gpu
 
 
+_analysis: Optional[Gpu] = None      # GPU for the analysis decodes of the current render
+
+
+def use_for_analysis(gpu: Optional[Gpu]) -> None:
+    global _analysis
+    _analysis = gpu
+
+
+def analysis_input_args() -> List[str]:
+    """Before an -i of an analysis decode (360 motion, tracking, subject frames): decode on the
+    GPU picked for this render; software decoding when there is none or the stream needs it."""
+    return ["-hwaccel", "vaapi", "-hwaccel_device", _analysis.device] if _analysis else []
+
+
 def global_args(gpu: Optional[Gpu]) -> List[str]:
     return ["-init_hw_device", f"vaapi=va:{gpu.device}", "-filter_hw_device", "va"] if gpu else []
 

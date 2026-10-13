@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 
 from . import audio as audio_mod
@@ -12,7 +14,7 @@ from . import gpu as gpu_mod
 from . import intro as intro_mod
 from . import sources as src_mod
 from . import style as style_mod
-from .ffmpeg import ClipsError, probe, vlog
+from .ffmpeg import ClipsError, cpu_count, probe, vlog
 from .subs import check_subs_path
 
 
@@ -187,6 +189,7 @@ def build_views(args, plan, sources, assigns):
                     print(f"auto-framed {s.path.name}: {len(keys)} keyframes -> "
                           f"{reframe.sidecar_path(s.path).name}", file=sys.stderr)
     views = []
+    pending = {}            # shot index -> motion analysis to run (one ffmpeg each, in parallel)
     for sh, a in zip(plan.shots, assigns):
         s, v = sources[a.source], base[a.source]
         if v.is360:
@@ -202,18 +205,30 @@ def build_views(args, plan, sources, assigns):
             else:
                 sv = subj and SJ.shot_view(SJ.clip_path(s.path, v, s.duration, subj), v,
                                            a.start, sh.length)
-                v = (reframe.View(v.kind, v.lenses, v.pair, sv[0], sv[1], v.fov) if sv else
-                     reframe.auto_view(s.path, v, a.start, sh.length))
+                if sv:
+                    v = reframe.View(v.kind, v.lenses, v.pair, sv[0], sv[1], v.fov)
+                else:
+                    pending[len(views)] = partial(reframe.auto_view, s.path, v, a.start, sh.length)
         elif args.fit == "track":
             info = s.info or probe(s.path)
             st = subj and SJ.shot_track(SJ.clip_path(s.path, v, s.duration, subj,
                                                      (info.width or 0, info.height or 0)),
                                         a.start, sh.length)
-            v = (reframe.View(track=st) if st else
-                 reframe.track_view(s.path, a.start, sh.length, info.width or 1080, info.height or 1920))
-            if getattr(args, "_framing", None):
-                v.track, v.place = autoframe.flat_track(v.track, framing)
+            if st:
+                v = reframe.View(track=st)
+            else:
+                pending[len(views)] = partial(reframe.track_view, s.path, a.start, sh.length,
+                                              info.width or 1080, info.height or 1920)
         views.append(v)
+    if pending:
+        workers = min(len(pending), max(1, cpu_count() // 2))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, v in zip(pending, ex.map(lambda f: f(), pending.values())):
+                views[i] = v
+    if args.fit == "track" and getattr(args, "_framing", None):
+        for v in views:
+            if v is not None and not v.is360:
+                v.track, v.place = autoframe.flat_track(v.track, framing)
     return views
 
 
@@ -264,6 +279,8 @@ def run(args) -> int:
     if (args.subject or args.subject_desc) and args.fit is None:
         args.fit = "track"            # flat footage can only follow a subject by panning the crop
     knobs = apply_style(args)
+    args._gpu = gpu_mod.resolve(args.gpu)
+    gpu_mod.use_for_analysis(args._gpu)
     if not args.output and not args.dry_run:
         raise ClipsError("-o/--output is required unless --dry-run")
     if args.beats_per_cut is not None and args.beats_per_cut < 1:
@@ -408,7 +425,7 @@ def run(args) -> int:
 
 
 def gpu_kwargs(args) -> dict:
-    return {"gpu": gpu_mod.resolve(args.gpu), "gpu_required": args.gpu == "vaapi"}
+    return {"gpu": args._gpu, "gpu_required": args.gpu == "vaapi"}
 
 
 NO_MUSIC_LEN = 20.0        # output length without a song when --duration is not given

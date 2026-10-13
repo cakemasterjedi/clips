@@ -81,6 +81,7 @@ def test_broken_gpu_falls_back_to_cpu(tmp_path, monkeypatch, capsys):
     """auto: a GPU that fails mid-render (here a device that does not exist) -> CPU, same spec."""
     v = tmp_path / "v.mp4"
     make_video(v, "640x360", 30, 5)
+    monkeypatch.setattr(G, "_analysis", None)          # restored after the test
     monkeypatch.setattr(G, "resolve", lambda mode: G.Gpu("/dev/dri/renderD999"))
     out = tmp_path / "o.mp4"
     assert cli.main([str(v), "--audio", str(_song(tmp_path)), "--no-intro", "--preview",
@@ -94,6 +95,7 @@ def test_broken_gpu_falls_back_to_cpu(tmp_path, monkeypatch, capsys):
 def test_required_gpu_does_not_fall_back(tmp_path, monkeypatch):
     v = tmp_path / "v.mp4"
     make_video(v, "640x360", 30, 5)
+    monkeypatch.setattr(G, "_analysis", None)          # restored after the test
     monkeypatch.setattr(G, "resolve", lambda mode: G.Gpu("/dev/dri/renderD999"))
     assert cli.main([str(v), "--audio", str(_song(tmp_path)), "--no-intro", "--preview",
                      "--gpu", "vaapi", "-o", str(tmp_path / "o.mp4")]) != 0
@@ -107,3 +109,26 @@ def test_ui_gpu_choice(tmp_path):
     argv = U.render_argv({"input": str(v), "audio": str(song), "gpu": "off"}, tmp_path)
     assert argv[argv.index("--gpu") + 1] == "off"
     assert "--gpu" not in U.render_argv({"input": str(v), "audio": str(song)}, tmp_path)
+
+
+def test_analysis_decode_args(monkeypatch):
+    from clips import reframe as RF
+
+    monkeypatch.setattr(G, "_analysis", None)
+    assert "-hwaccel" not in RF.window_inputs(R.Path("a.mp4"), RF.View(), 0.0, 1.0)
+    G.use_for_analysis(GPU)
+    ins = RF.window_inputs(R.Path("a.mp4"), RF.View(), 0.0, 1.0)
+    assert ins[:4] == ["-hwaccel", "vaapi", "-hwaccel_device", GPU.device]
+
+
+def test_cpu_count_respects_cgroup_quota(monkeypatch):
+    import builtins
+    import io
+
+    from clips import ffmpeg as F
+
+    real = builtins.open
+    monkeypatch.setattr(builtins, "open", lambda p, *a, **k: io.StringIO("250000 100000\n")
+                        if p == "/sys/fs/cgroup/cpu.max" else real(p, *a, **k))
+    monkeypatch.setattr(F.os, "sched_getaffinity", lambda pid: set(range(16)), raising=False)
+    assert F.cpu_count() == 3
