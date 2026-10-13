@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clips frame</title>
+<style>
+  :root { --bg:#111; --panel:#1b1b1b; --line:#333; --text:#ddd; --muted:#888; --accent:#ffb000; --key:#4fc3f7; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:13px/1.4 system-ui, sans-serif;
+         display:flex; gap:16px; padding:16px; height:100vh; overflow:hidden; }
+  #stage { display:flex; flex-direction:column; align-items:center; gap:8px; height:100%; }
+  #view { height:calc(100% - 64px); aspect-ratio:9/16; background:#000; cursor:grab; touch-action:none;
+          border:1px solid var(--line); }
+  #view.dragging { cursor:grabbing; }
+  #timeline { position:relative; width:100%; min-width:280px; height:40px; }
+  #scrub { width:100%; margin:0; position:absolute; top:18px; }
+  #marks { position:absolute; left:8px; right:8px; top:0; height:16px; }
+  .mark { position:absolute; width:10px; height:10px; margin-left:-5px; top:3px; transform:rotate(45deg);
+          background:var(--key); cursor:pointer; border:0; padding:0; }
+  .mark.near { background:var(--accent); }
+  #side { flex:1; min-width:260px; max-width:440px; display:flex; flex-direction:column; gap:12px; overflow:auto; }
+  .box { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px; }
+  h1 { font-size:15px; margin:0 0 4px; word-break:break-all; }
+  #pano { position:relative; width:100%; }
+  #pano video { width:100%; display:block; cursor:crosshair; }
+  #dot { position:absolute; width:12px; height:12px; margin:-6px 0 0 -6px; border:2px solid var(--accent);
+         border-radius:50%; pointer-events:none; }
+  #readout { font-variant-numeric:tabular-nums; display:grid; grid-template-columns:repeat(5, auto); gap:2px 10px; }
+  #readout b { color:var(--muted); font-weight:normal; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  td { padding:2px 4px; border-top:1px solid var(--line); }
+  td button { background:none; border:0; color:var(--muted); cursor:pointer; }
+  tr.near td { color:var(--accent); }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  button.main { background:var(--accent); color:#000; border:0; border-radius:4px; padding:6px 14px; font-weight:600; cursor:pointer; }
+  button.alt { background:#2a2a2a; color:var(--text); border:1px solid var(--line); border-radius:4px; padding:5px 10px; cursor:pointer; }
+  #status { color:var(--muted); }
+  #status.dirty { color:var(--accent); }
+  #status.err { color:#ff6b6b; }
+  kbd { background:#2a2a2a; border:1px solid var(--line); border-radius:3px; padding:0 4px; font-size:12px; }
+  ul.keys { margin:0; padding-left:16px; color:var(--muted); }
+  #mode { font-weight:600; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="view" width="540" height="960" tabindex="0"></canvas>
+  <div id="timeline">
+    <div id="marks"></div>
+    <input id="scrub" type="range" min="0" max="1" step="0.001" value="0">
+  </div>
+</div>
+<div id="side">
+  <div class="box">
+    <h1 id="name">loading...</h1>
+    <div class="row"><span id="time">0.00 s</span> <span id="mode"></span></div>
+  </div>
+  <div class="box">
+    <div id="pano"><video id="video" src="/video" preload="auto" playsinline crossorigin="anonymous"></video><div id="dot"></div></div>
+  </div>
+  <div class="box"><div id="readout"></div></div>
+  <div class="box">
+    <div class="row">
+      <button class="main" id="save">Save</button>
+      <button class="alt" id="add">Add keyframe (K)</button>
+      <button class="alt" id="play">Play (Space)</button>
+      <span id="status"></span>
+    </div>
+  </div>
+  <div class="box"><table id="list"></table></div>
+  <div class="box">
+    <ul class="keys">
+      <li>Drag the view to aim; wheel or <kbd>+</kbd>/<kbd>-</kbd> to zoom; <kbd>Q</kbd>/<kbd>E</kbd> roll (<kbd>Shift</kbd> = 5&deg;), <kbd>R</kbd> level</li>
+      <li>Click the panorama to look there</li>
+      <li><kbd>K</kbd> keyframe here, <kbd>Del</kbd> remove the one under the playhead</li>
+      <li><kbd>Space</kbd> play, <kbd>&larr;</kbd>/<kbd>&rarr;</kbd> frame step (<kbd>Shift</kbd> = 1 s), <kbd>[</kbd>/<kbd>]</kbd> previous/next keyframe</li>
+      <li><kbd>F</kbd> follow keyframes on/off, <kbd>Ctrl</kbd>+<kbd>S</kbd> save</li>
+    </ul>
+  </div>
+</div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const canvas = $("view"), video = $("video");
+const DEG = Math.PI / 180;
+const S = { yaw: 0, pitch: 0, fov: 60, roll: 0, keys: [], follow: true, dirty: false,
+            fps: 30, duration: 0, sidecar: "" };
+
+// ---------------------------------------------------------------- keyframe maths (= reframe.py)
+const wrap = (a) => ((a + 180) % 360 + 360) % 360 - 180;
+function interp(keys, t) {
+  if (!keys.length) return null;
+  const v = (k) => [wrap(k.yaw), k.pitch, k.fov, k.roll];
+  if (t <= keys[0].t) return v(keys[0]);
+  for (let i = 0; i + 1 < keys.length; i++) {
+    const a = keys[i], b = keys[i + 1];
+    if (t < b.t) {
+      const u = (t - a.t) / Math.max(b.t - a.t, 1e-9);
+      const e = 0.5 - 0.5 * Math.cos(Math.PI * u);
+      const lerp = (x, y) => x + (y - x) * e;
+      return [wrap(a.yaw + wrap(b.yaw - a.yaw) * e), lerp(a.pitch, b.pitch),
+              lerp(a.fov, b.fov), lerp(a.roll, b.roll)];
+    }
+  }
+  return v(keys[keys.length - 1]);
+}
+
+// ---------------------------------------------------------------- WebGL view (= v360 flat)
+const gl = canvas.getContext("webgl", { preserveDrawingBuffer: true, antialias: false });
+let prog, tex, U = {};
+function initGL() {
+  if (!gl) { status("This browser has no WebGL.", "err"); return; }
+  const vs = `attribute vec2 p; varying vec2 ndc; void main(){ ndc = p; gl_Position = vec4(p, 0., 1.); }`;
+  const fs = `precision highp float;
+    uniform sampler2D tex; uniform vec2 tanHalf; uniform float yaw, pitch, roll; varying vec2 ndc;
+    void main() {
+      vec2 p = ndc * tanHalf;                          // x right, y up, z forward
+      float cr = cos(roll), sr = sin(roll);
+      p = vec2(cr * p.x + sr * p.y, -sr * p.x + cr * p.y);
+      vec3 d = vec3(p, 1.0);
+      float cp = cos(pitch), sp = sin(pitch);
+      d = vec3(d.x, cp * d.y + sp * d.z, -sp * d.y + cp * d.z);
+      float cy = cos(yaw), sy = sin(yaw);
+      d = vec3(cy * d.x + sy * d.z, d.y, -sy * d.x + cy * d.z);
+      float lon = atan(d.x, d.z), lat = asin(clamp(d.y / length(d), -1.0, 1.0));
+      gl_FragColor = texture2D(tex, vec2(fract(0.5 + lon / 6.28318531), 0.5 - lat / 3.14159265));
+    }`;
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(prog); gl.useProgram(prog);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, "p"); gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  for (const n of ["tanHalf", "yaw", "pitch", "roll", "tex"]) U[n] = gl.getUniformLocation(prog, n);
+  tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
+                        [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
+    gl.texParameteri(gl.TEXTURE_2D, k, v);
+}
+const vFov = (h) => 2 * Math.atan(Math.tan(h * DEG / 2) * canvas.height / canvas.width) / DEG;
+function draw() {
+  if (!gl || !prog) return;
+  if (video.readyState >= 2) {
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
+  }
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.uniform2f(U.tanHalf, Math.tan(S.fov * DEG / 2), Math.tan(vFov(S.fov) * DEG / 2));
+  gl.uniform1f(U.yaw, S.yaw * DEG); gl.uniform1f(U.pitch, S.pitch * DEG); gl.uniform1f(U.roll, S.roll * DEG);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+// ---------------------------------------------------------------- state
+const r2 = (x) => Math.round(x * 100) / 100;
+function setView(yaw, pitch, fov, roll) {
+  S.yaw = r2(wrap(yaw)); S.pitch = r2(Math.max(-90, Math.min(90, pitch)));
+  S.fov = r2(Math.max(20, Math.min(120, fov))); S.roll = r2(Math.max(-90, Math.min(90, roll)));
+}
+function edit(f) { S.follow = false; f(); refresh(); }
+function status(msg, cls) { const s = $("status"); s.textContent = msg; s.className = cls || ""; }
+function markDirty() { S.dirty = true; status("unsaved changes", "dirty"); }
+const nearKey = () => S.keys.findIndex((k) => Math.abs(k.t - video.currentTime) <= 0.6 / S.fps);
+function addKey() {
+  const t = Math.round(video.currentTime * 1000) / 1000;
+  const k = { t, yaw: S.yaw, pitch: S.pitch, fov: S.fov, roll: S.roll };
+  const i = nearKey();
+  if (i >= 0) S.keys[i] = k; else S.keys.push(k);
+  S.keys.sort((a, b) => a.t - b.t);
+  S.follow = true; markDirty(); refresh();
+}
+function delKey(i) {
+  if (i === undefined) i = nearKey();
+  if (i < 0) return;
+  S.keys.splice(i, 1); markDirty(); refresh();
+}
+function seek(t) { video.currentTime = Math.max(0, Math.min(S.duration || video.duration || 0, t)); }
+async function save() {
+  try {
+    const res = await fetch("/views", { method: "POST",
+      headers: { "Content-Type": "application/json", "X-Clips": "1" },
+      body: JSON.stringify({ version: 1, keyframes: S.keys }) });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || res.status);
+    S.dirty = false; status(`saved ${j.keyframes} keyframe${j.keyframes === 1 ? "" : "s"} to ${j.file}`);
+  } catch (e) { status("save failed: " + e.message, "err"); }
+}
+
+// ---------------------------------------------------------------- UI
+function refresh() {
+  const t = video.currentTime || 0, dur = S.duration || video.duration || 0;
+  $("time").textContent = `${t.toFixed(2)} / ${dur.toFixed(2)} s`;
+  $("mode").textContent = !S.keys.length ? "no keyframes yet" :
+    S.follow ? "following keyframes" : "editing (K to keep)";
+  $("readout").innerHTML = ["yaw", "pitch", "fov", "roll"].map((k) => `<b>${k}</b>`).join("") + "<b></b>" +
+    [S.yaw, S.pitch, S.fov, S.roll].map((v) => `<span>${v.toFixed(1)}&deg;</span>`).join("") + "<span></span>";
+  if (document.activeElement !== $("scrub")) $("scrub").value = dur ? t / dur : 0;
+  const near = nearKey();
+  $("marks").innerHTML = "";
+  S.keys.forEach((k, i) => {
+    const m = document.createElement("button");
+    m.className = "mark" + (i === near ? " near" : ""); m.title = `${k.t.toFixed(2)} s`;
+    m.style.left = `${dur ? (k.t / dur) * 100 : 0}%`;
+    m.onclick = () => { S.follow = true; seek(k.t); };
+    $("marks").appendChild(m);
+  });
+  $("list").innerHTML = S.keys.length ? "<tr><td>t</td><td>yaw</td><td>pitch</td><td>fov</td><td>roll</td><td></td></tr>" : "";
+  S.keys.forEach((k, i) => {
+    const tr = document.createElement("tr"); if (i === near) tr.className = "near";
+    tr.innerHTML = [k.t.toFixed(2), k.yaw.toFixed(1), k.pitch.toFixed(1), k.fov.toFixed(1), k.roll.toFixed(1)]
+      .map((v) => `<td>${v}</td>`).join("") + `<td><button title="go">&#9654;</button><button title="delete">&times;</button></td>`;
+    const [go, del] = tr.querySelectorAll("button");
+    go.onclick = () => { S.follow = true; seek(k.t); };
+    del.onclick = () => delKey(i);
+    $("list").appendChild(tr);
+  });
+  const dot = $("dot");
+  dot.style.left = `${(0.5 + S.yaw / 360) * 100}%`; dot.style.top = `${(0.5 - S.pitch / 180) * 100}%`;
+}
+function tick() {
+  if (S.follow && S.keys.length) {
+    const v = interp(S.keys, video.currentTime);
+    setView(...v);
+  }
+  draw(); refresh();
+  requestAnimationFrame(tick);
+}
+
+let drag = null;
+canvas.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); canvas.classList.add("dragging"); canvas.focus(); });
+canvas.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag = { x: e.clientX, y: e.clientY };
+  edit(() => setView(S.yaw - dx / canvas.clientWidth * S.fov, S.pitch + dy / canvas.clientHeight * vFov(S.fov), S.fov, S.roll));
+});
+const endDrag = () => { drag = null; canvas.classList.remove("dragging"); };
+canvas.addEventListener("pointerup", endDrag); canvas.addEventListener("pointercancel", endDrag);
+canvas.addEventListener("wheel", (e) => { e.preventDefault(); edit(() => setView(S.yaw, S.pitch, S.fov * Math.exp(e.deltaY * 0.001), S.roll)); }, { passive: false });
+video.addEventListener("click", (e) => {
+  const r = video.getBoundingClientRect();
+  edit(() => setView(((e.clientX - r.left) / r.width - 0.5) * 360, (0.5 - (e.clientY - r.top) / r.height) * 180, S.fov, S.roll));
+});
+$("scrub").addEventListener("input", (e) => { S.follow = true; seek(e.target.value * (S.duration || video.duration || 0)); });
+$("save").onclick = save; $("add").onclick = addKey;
+const togglePlay = () => { if (video.paused) { S.follow = true; video.play(); } else video.pause(); };
+$("play").onclick = togglePlay;
+window.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" && e.key !== " ") return;
+  const k = e.key, step = e.shiftKey ? 5 : 1;
+  if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === "s") { e.preventDefault(); save(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const acts = {
+    " ": togglePlay,
+    k: addKey, K: addKey, Delete: () => delKey(), Backspace: () => delKey(), x: () => delKey(),
+    ArrowLeft: () => { video.pause(); S.follow = true; seek(video.currentTime - (e.shiftKey ? 1 : 1 / S.fps)); },
+    ArrowRight: () => { video.pause(); S.follow = true; seek(video.currentTime + (e.shiftKey ? 1 : 1 / S.fps)); },
+    "[": () => { const p = S.keys.filter((q) => q.t < video.currentTime - 1e-3).pop(); if (p) { S.follow = true; seek(p.t); } },
+    "]": () => { const n = S.keys.find((q) => q.t > video.currentTime + 1e-3); if (n) { S.follow = true; seek(n.t); } },
+    q: () => edit(() => setView(S.yaw, S.pitch, S.fov, S.roll - step)), Q: () => edit(() => setView(S.yaw, S.pitch, S.fov, S.roll - step)),
+    e: () => edit(() => setView(S.yaw, S.pitch, S.fov, S.roll + step)), E: () => edit(() => setView(S.yaw, S.pitch, S.fov, S.roll + step)),
+    r: () => edit(() => setView(S.yaw, S.pitch, S.fov, 0)), R: () => edit(() => setView(S.yaw, S.pitch, S.fov, 0)),
+    "+": () => edit(() => setView(S.yaw, S.pitch, S.fov / 1.1, S.roll)), "=": () => edit(() => setView(S.yaw, S.pitch, S.fov / 1.1, S.roll)),
+    "-": () => edit(() => setView(S.yaw, S.pitch, S.fov * 1.1, S.roll)),
+    f: () => { S.follow = !S.follow; }, F: () => { S.follow = !S.follow; },
+  };
+  if (acts[k]) { e.preventDefault(); acts[k](); refresh(); }
+});
+window.addEventListener("beforeunload", (e) => { if (S.dirty) { e.preventDefault(); e.returnValue = ""; } });
+
+async function start() {
+  initGL();
+  const [meta, views] = await Promise.all([fetch("/meta").then((r) => r.json()), fetch("/views").then((r) => r.json())]);
+  $("name").textContent = meta.name; document.title = `${meta.name} - clips frame`;
+  S.fps = meta.fps || 30; S.duration = meta.duration || 0; S.sidecar = meta.sidecar;
+  S.keys = (views.keyframes || []).map((k) => ({ t: k.t, yaw: k.yaw, pitch: k.pitch, fov: k.fov, roll: k.roll }));
+  if (views.error) status(views.error, "err");
+  setView(0, 0, meta.fov || 60, 0);
+  if (S.keys.length) setView(...interp(S.keys, 0));
+  await new Promise((ok) => { if (video.readyState >= 2) ok(); else video.addEventListener("loadeddata", ok, { once: true }); });
+  if (!S.duration) S.duration = video.duration;
+  document.body.dataset.ready = "1";
+  requestAnimationFrame(tick);
+}
+window.clipsFrame = { S, interp, setView, addKey, delKey, save, draw, seek, video };
+start();
+</script>
+</body>
+</html>

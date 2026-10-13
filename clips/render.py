@@ -5,14 +5,14 @@ import os
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 from .audio import Plan
 from .ffmpeg import run_ffmpeg
 from .sources import Assignment, Source
-from .reframe import View, input_labels, track_crop, view_graph
+from .reframe import View, input_labels, animate, still, track_crop, view_graph
 from .subs import escape_filter_path, prepare_subs
 
 FADE = 0.3
@@ -308,9 +308,19 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
                 a0 = assignments[0]
                 blend = (sources[a0.source].path, a0.start)
             vw = views[i] if views else None
+            if vw is not None and vw.animated:
+                txt, anim = animate(vw, sh.frames, plan.fps,
+                                    PREVIEW_SIZE if preview else (1080, 1920))
+                if txt:
+                    cmd = tmpd / f"view_{i + 1:04d}.cmd"
+                    cmd.write_text(txt, encoding="utf-8")
+                    vw = replace(anim, cmds=cmd)
+                else:
+                    vw = still(vw)
+            bv = still(views[0]) if views and blend and views[0] is not None else None
             run_ffmpeg(segment_args(sources[a.source].path, a, sh.frames, plan.fps, segs[i],
                                     fit, sh.punch, sh.flash, punch_zoom, blend, preview,
-                                    sh.ramp, vw, views[0] if views and blend else None))
+                                    sh.ramp, vw, bv))
 
         print(f"rendering {len(segs)} shots with {workers} workers...", file=sys.stderr)
         with ThreadPoolExecutor(max_workers=workers) as ex:

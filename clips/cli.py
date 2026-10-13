@@ -145,8 +145,13 @@ def build_views(args, plan, sources, assigns):
         s, v = sources[a.source], base[a.source]
         if v.is360:
             v = reframe.View(v.kind, v.lenses, v.pair, fov=args.fov)
+            keys = None if args.yaw is not None else reframe.load_keyframes(s.path)
             if args.yaw is not None:
                 v.yaw, v.pitch = args.yaw, args.pitch
+            elif keys:
+                info = s.info or probe(s.path)
+                v.eq = reframe.eq_size(v, info.width or 0, info.height or 0)
+                v = reframe.keyed_view(v, keys, a.start)
             else:
                 v = reframe.auto_view(s.path, v, a.start, sh.length)
         elif args.fit == "track":
@@ -160,7 +165,11 @@ def view_dict(v):
     if v is None:
         return None
     if v.is360:
-        return {"kind": v.kind, "lenses": v.lenses, "yaw": v.yaw, "pitch": v.pitch, "fov": v.fov}
+        d = {"kind": v.kind, "lenses": v.lenses, "yaw": v.yaw, "pitch": v.pitch, "fov": v.fov,
+             "roll": v.roll}
+        if v.keys:
+            d["keyframes"] = len(v.keys)
+        return d
     return {"kind": "flat", "track": list(v.track) if v.track else None}
 
 
@@ -339,6 +348,24 @@ def build_learn_parser() -> argparse.ArgumentParser:
     return p
 
 
+def build_frame_parser() -> argparse.ArgumentParser:
+    from . import frame
+    p = argparse.ArgumentParser(
+        prog="clips frame",
+        description="Frame a 360 clip by hand in the browser: drag the view, set keyframes, "
+                    "save them next to the clip (<clip>.view.json) for renders to use.")
+    p.add_argument("clip", help="360 clip (.insv: open the _00_ file of a pair; or equirect MP4)")
+    p.add_argument("--360", dest="mode360", default="auto",
+                   choices=["auto", "equirect", "dfisheye"], help="force the 360 layout")
+    p.add_argument("--port", type=int, default=8360, help="local port (default 8360)")
+    p.add_argument("--no-browser", action="store_true", help="do not open the browser")
+    p.add_argument("--cache", type=Path, default=None,
+                   help="proxy folder (default ~/.cache/clips/proxies)")
+    p.add_argument("--proxy-width", type=int, default=frame.PROXY_W,
+                   help=f"width of the equirect preview video (default {frame.PROXY_W})")
+    return p
+
+
 def run_learn(args) -> int:
     prof = style_mod.learn(args.refs, args.name or Path(args.output).stem, Path(args.cache))
     out = Path(args.output)
@@ -354,10 +381,18 @@ def run_learn(args) -> int:
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    learning = bool(argv) and argv[0] == "learn"
-    args = build_learn_parser().parse_args(argv[1:]) if learning else build_parser().parse_args(argv)
+    sub = argv[0] if argv and argv[0] in ("learn", "frame") else None
+    if sub == "learn":
+        args = build_learn_parser().parse_args(argv[1:])
+    elif sub == "frame":
+        args = build_frame_parser().parse_args(argv[1:])
+    else:
+        args = build_parser().parse_args(argv)
     try:
-        return run_learn(args) if learning else run(args)
+        if sub == "frame":
+            from .frame import run_frame
+            return run_frame(args)
+        return run_learn(args) if sub == "learn" else run(args)
     except ClipsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

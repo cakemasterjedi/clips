@@ -81,5 +81,21 @@ Audio is loudness-normalized to -14 LUFS (true peak -1.5 dB) in two passes after
 - Native Insta360 `.insv` files work directly: put them in the input folder (or pass one). All three layouts are handled: both lenses side by side in one stream, one stream per lens, or one file per lens (`VID_..._00_NNN.insv` + `VID_..._10_NNN.insv`; the `_10_` file is read together with its `_00_` partner). Exported 360 MP4s (equirectangular, detected from their 360 metadata or a 2:1 frame of at least 3840 wide) work too.
 - Each shot is reframed to a flat 1080x1920 view with FFmpeg `v360`. The view follows the motion in that shot (yaw from where the most movement is, pitch capped at +-30 deg). `--yaw DEG [--pitch DEG]` fixes the view, `--fov DEG` sets the horizontal field of view (default 60). `--360 auto|off|equirect|dfisheye` overrides detection.
 - Quality vs Insta360 Studio: `.insv` is stitched with a generic 200 deg fisheye model, with no per-camera lens calibration, no seam blending, no FlowState stabilization and no horizon levelling (those need Insta360's software and gyro data). The auto view keeps away from the lens seams (yaw +-90), but a view pointed at a seam can show a visible line. For best quality, export a 360 MP4 from Insta360 Studio and use that.
-- `--dry-run` reports `view` per shot (kind, lenses, yaw, pitch, fov, or the track for `--fit track`).
+- `--dry-run` reports `view` per shot (kind, lenses, yaw, pitch, fov, roll, the number of keyframes when a keyframe file is used, or the track for `--fit track`).
+
+### Framing by hand: `clips frame`
+
+```
+clips frame VID_20261013_120000_00_001.insv
+```
+
+Opens a local page (http://127.0.0.1:8360, nothing leaves the machine) that plays the clip as a 360 view in the 9:16 frame of the final video:
+
+- Drag to aim, mouse wheel or `+`/`-` to zoom, `Q`/`E` to roll (`Shift` for 5 deg steps, `R` levels the horizon), or click the panorama to look there.
+- `K` sets a keyframe at the playhead, `Del` removes it, `[`/`]` jump between keyframes, `Space` plays with the view following the keyframes, arrow keys step a frame (`Shift`: 1 s).
+- `Ctrl+S` (or Save) writes `<clip>.view.json` next to the clip, e.g. `VID_..._00_001.insv.view.json`.
+
+Every render then uses that file for the clip: whichever part of the clip a shot uses, the view follows the keyframes in clip time (eased between keyframes, held before the first and after the last). The keyframe file beats the automatic view; `--yaw` beats both. The file is plain JSON (`{"version": 1, "keyframes": [{"t": 1.5, "yaw": 40, "pitch": -5, "fov": 60, "roll": 0}]}`, `t` in seconds from the clip start), so it can be written by hand too.
+
+The page plays a lightweight equirectangular preview, built once per clip and cached in `~/.cache/clips/proxies` (`--cache` to move it, `--proxy-width` to change its size). Options: `--port`, `--no-browser`, `--360 equirect|dfisheye` to force the layout. Moving views cost render time: an 8 s shot that pans, tilts, zooms and rolls the whole way renders in roughly 2.5x the time of a fixed view; a pan alone costs little.
 
