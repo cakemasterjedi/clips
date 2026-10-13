@@ -40,12 +40,13 @@ def fit_graph(fit: str, fps: int) -> str:
     raise ValueError(f"unknown fit mode {fit!r}")
 
 
-def segment_filter(fit: str, fps: int, punch: bool = False, flash: bool = False) -> str:
+def segment_filter(fit: str, fps: int, punch: bool = False, flash: bool = False,
+                   punch_zoom: float = PUNCH_ZOOM) -> str:
     """Complete -filter_complex for one shot, output label [v]."""
     g = fit_graph(fit, fps)
     last = "f"
     if punch:
-        z = f"(1+{PUNCH_ZOOM}*pow(1-min(t/{PUNCH_DUR},1),2))"   # 1.12 -> 1.0, ease-out
+        z = f"(1+{punch_zoom:g}*pow(1-min(t/{PUNCH_DUR},1),2))"   # 1.12 -> 1.0, ease-out
         g += (f";[{last}]split[pb][pz];"
               f"[pz]scale=w='2*trunc(1080*{z}/2)':h='2*trunc(1920*{z}/2)':eval=frame[pzz];"
               f"[pb][pzz]overlay=x='2*trunc((W-w)/4)':y='2*trunc((H-h)/4)':eval=frame:"
@@ -58,12 +59,13 @@ def segment_filter(fit: str, fps: int, punch: bool = False, flash: bool = False)
 
 
 def segment_args(src: Path, a: Assignment, frames: int, fps: int, out: Path,
-                 fit: str = "crop", punch: bool = False, flash: bool = False) -> List[str]:
+                 fit: str = "crop", punch: bool = False, flash: bool = False,
+                 punch_zoom: float = PUNCH_ZOOM) -> List[str]:
     args = ["-y"]
     if a.loop:
         args += ["-stream_loop", "-1"]
     args += ["-ss", f"{a.start:.6f}", "-i", str(src), "-frames:v", str(frames), "-an",
-             "-filter_complex", segment_filter(fit, fps, punch, flash), "-map", "[v]",
+             "-filter_complex", segment_filter(fit, fps, punch, flash, punch_zoom), "-map", "[v]",
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-r", str(fps), str(out)]
     return args
 
@@ -165,7 +167,8 @@ def final_args_intro(listfile: Path, audio: Path, audio_start: float, total: flo
 def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignment],
            audio: Path, audio_start: float, subs: Optional[Path], out: Path,
            workers: Optional[int] = None, fit: str = "crop", sub_style: str = "pop",
-           word_reveal: bool = False, intro: Optional[IntroAudio] = None) -> None:
+           word_reveal: bool = False, intro: Optional[IntroAudio] = None,
+           punch_zoom: float = PUNCH_ZOOM) -> None:
     workers = workers or max(1, (os.cpu_count() or 2) // 2)
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -178,7 +181,7 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
             a = assignments[i]
             sh = plan.shots[i]
             run_ffmpeg(segment_args(sources[a.source].path, a, sh.frames, plan.fps, segs[i],
-                                    fit, sh.punch, sh.flash))
+                                    fit, sh.punch, sh.flash, punch_zoom))
 
         print(f"rendering {len(segs)} shots with {workers} workers...", file=sys.stderr)
         with ThreadPoolExecutor(max_workers=workers) as ex:

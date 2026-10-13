@@ -9,6 +9,7 @@ from pathlib import Path
 from . import audio as audio_mod
 from . import intro as intro_mod
 from . import sources as src_mod
+from . import style as style_mod
 from .ffmpeg import ClipsError, probe
 from .subs import check_subs_path
 
@@ -32,31 +33,79 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fps", type=int, choices=(30, 60), default=30)
     p.add_argument("--beats-per-cut", type=int, metavar="N", help="cut every N beats (disables auto)")
     p.add_argument("--duration", type=float, help="max output length in seconds")
-    p.add_argument("--audio-start", type=audio_start_arg, default=0.0, metavar="SECONDS|auto",
+    p.add_argument("--audio-start", type=audio_start_arg, default=None, metavar="SECONDS|auto",
                    help="start offset in the song (s), or 'auto' to pick the drop / most energetic part")
     p.add_argument("--shuffle", action="store_true")
     p.add_argument("--seed", type=int)
-    p.add_argument("--fit", choices=("crop", "letterbox", "blur"), default="crop",
+    p.add_argument("--fit", choices=("crop", "letterbox", "blur"), default=None,
                    help="how to fit non-9:16 footage (default crop)")
     p.add_argument("--sub-style", choices=("pop", "glow", "top"), default="pop",
                    help="caption style for .srt input (default pop)")
     p.add_argument("--word-reveal", action="store_true", help="reveal captions word by word (.srt only)")
-    p.add_argument("--flash", action="store_true", help="white flash on the strongest beat hits")
-    p.add_argument("--punch", action="store_true", help="zoom punch on strong beat hits")
+    p.add_argument("--flash", action="store_true", default=None, help="white flash on the strongest beat hits")
+    p.add_argument("--punch", action="store_true", default=None, help="zoom punch on strong beat hits")
     p.add_argument("--intro", action="append", default=[], metavar="PATH@START-END",
                    help="dialogue intro region (source audio, no music); repeatable")
     p.add_argument("--no-intro", action="store_true", help="disable the (auto-detected) dialogue intro")
-    p.add_argument("--intro-max", type=float, default=intro_mod.DEFAULT_INTRO_MAX, metavar="SECONDS",
+    p.add_argument("--intro-max", type=float, default=None, metavar="SECONDS",
                    help="cap on the auto-detected intro length (default 8)")
-    p.add_argument("--music-in", choices=("rise", "drop"), default="rise",
+    p.add_argument("--music-in", choices=("rise", "drop"), default=None,
                    help="how the music enters after the intro (default rise)")
-    p.add_argument("--rise", type=float, default=3.0, metavar="SECONDS",
+    p.add_argument("--rise", type=float, default=None, metavar="SECONDS",
                    help="length of the music rise under the dialogue (default 3)")
+    p.add_argument("--style", metavar="PROFILE.json",
+                   help="edit like a learned creator profile (see `clips learn`); flags still win")
     p.add_argument("--dry-run", action="store_true", help="print cut plan as JSON and exit")
     return p
 
 
+DEFAULTS = {"audio_start": 0.0, "fit": "crop", "punch": False, "flash": False,
+            "intro_max": intro_mod.DEFAULT_INTRO_MAX, "music_in": "rise", "rise": 3.0}
+
+
+def apply_style(args) -> dict:
+    """Fill flags the user did not give from --style, then from DEFAULTS. Returns the
+    planning knobs that have no flag of their own."""
+    knobs = {"max_shot": audio_mod.AUTO_MAX_SHOT, "onset_cuts": True,
+             "punch_frac": audio_mod.PUNCH_FRAC, "flash_frac": audio_mod.FLASH_FRAC,
+             "punch_zoom": None, "lead": 0.0}
+    if args.style:
+        prof = style_mod.load_profile(args.style)
+        pace, fx, mus, intro = (prof.get(k, {}) for k in ("pacing", "fx", "music", "intro"))
+        if args.beats_per_cut is None and pace.get("beats_per_cut"):
+            args.beats_per_cut = int(pace["beats_per_cut"])
+        knobs["max_shot"] = float(pace.get("max_shot", knobs["max_shot"]))
+        knobs["onset_cuts"] = bool(pace.get("onset_cuts", True))
+        if args.punch is None:
+            args.punch = fx.get("punch", 0) > 0
+        if args.flash is None:
+            args.flash = fx.get("flash", 0) > 0
+        if fx.get("punch", 0) > 0:
+            knobs["punch_frac"] = float(fx["punch"])
+            knobs["punch_zoom"] = float(fx.get("punch_zoom") or 0) or None
+        if fx.get("flash", 0) > 0:
+            knobs["flash_frac"] = float(fx["flash"])
+        if args.fit is None:
+            args.fit = prof.get("fit")
+        if not args.intro and not args.no_intro and not intro.get("use", True):
+            args.no_intro = True
+        if args.intro_max is None and intro.get("max"):
+            args.intro_max = float(intro["max"])
+        if args.music_in is None:
+            args.music_in = mus.get("music_in")
+        if args.rise is None and mus.get("music_in") == "rise":
+            args.rise = float(mus.get("rise") or DEFAULTS["rise"])
+        if args.audio_start is None:
+            args.audio_start = "auto"
+            knobs["lead"] = float(mus.get("lead_in") or 0.0)
+    for k, v in DEFAULTS.items():
+        if getattr(args, k) is None:
+            setattr(args, k, v)
+    return knobs
+
+
 def run(args) -> int:
+    knobs = apply_style(args)
     if not args.output and not args.dry_run:
         raise ClipsError("-o/--output is required unless --dry-run")
     if args.beats_per_cut is not None and args.beats_per_cut < 1:
@@ -100,14 +149,16 @@ def run(args) -> int:
     section_cands = []
     if args.audio_start == "auto":
         window = audio_mod.AUTO_WINDOW if args.duration is None else args.duration - t_intro
-        audio_start, section_cands = audio_mod.auto_audio_start(args.audio, window)
+        audio_start, section_cands = audio_mod.auto_audio_start(args.audio, window, knobs["lead"])
         print(f"note: --audio-start auto picked {audio_start:.2f}s", file=sys.stderr)
     else:
         audio_start = args.audio_start
     music_len = audio_mod.output_length(alen, audio_start,
                                         None if args.duration is None else args.duration - t_intro)
     an = audio_mod.analyze(args.audio, audio_start, music_len)
-    plan = audio_mod.plan_from_analysis(an, fps, args.beats_per_cut, args.punch, args.flash)
+    plan = audio_mod.plan_from_analysis(an, fps, args.beats_per_cut, args.punch, args.flash,
+                                        knobs["max_shot"], knobs["onset_cuts"],
+                                        knobs["punch_frac"], knobs["flash_frac"])
     # music section starts after any footage the intro already used from each clip
     start_at = [max([r.end for r in regions if r.source == s.path], default=0.0) for s in sources]
     music_assigns = src_mod.assign([s.length for s in plan.shots], sources, args.shuffle, args.seed,
@@ -133,6 +184,8 @@ def run(args) -> int:
         print(json.dumps({"intro": [r.to_dict() for r in regions],
                           "candidates": [r.to_dict() for r in candidates],
                           "audio_start": round(audio_start, 4),
+                          "audio_start_lead": knobs["lead"],
+                          "style": args.style, "fit": args.fit,
                           "audio_start_candidates": [{"start": t, "score": sc}
                                                      for t, sc in section_cands],
                           "music_in": args.music_in, "rise": args.rise,
@@ -148,15 +201,42 @@ def run(args) -> int:
                         args.music_in, args.rise)
     render(plan, all_sources, assigns, Path(args.audio), audio_start, args.subs,
            Path(args.output), fit=args.fit, sub_style=args.sub_style,
-           word_reveal=args.word_reveal, intro=ia)
+           word_reveal=args.word_reveal, intro=ia,
+           **({"punch_zoom": knobs["punch_zoom"]} if knobs["punch_zoom"] else {}))
     print(f"wrote {args.output}", file=sys.stderr)
     return 0
 
 
+def build_learn_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="clips learn",
+                                description="Learn a creator's editing style from their videos.")
+    p.add_argument("refs", nargs="+", help="links (downloaded with yt-dlp), video files or folders")
+    p.add_argument("-o", "--output", required=True, help="profile to write (.json)")
+    p.add_argument("--name", help="creator name stored in the profile (default: output file name)")
+    p.add_argument("--cache", default=str(style_mod.DEFAULT_CACHE),
+                   help=f"download folder for links (default {style_mod.DEFAULT_CACHE})")
+    return p
+
+
+def run_learn(args) -> int:
+    prof = style_mod.learn(args.refs, args.name or Path(args.output).stem, Path(args.cache))
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(prof, indent=2) + "\n", encoding="utf-8")
+    pc, fx, mu = prof["pacing"], prof["fx"], prof["music"]
+    print(f"wrote {out}: shots median {pc['median_shot']}s, on beat {pc['on_beat']:.0%}, "
+          f"punch {fx['punch']:.0%}, flash {fx['flash']:.0%}, fit {prof['fit']}, "
+          f"intro {'yes' if prof['intro']['use'] else 'no'}, music {mu['music_in']}",
+          file=sys.stderr)
+    return 0
+
+
 def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    learning = bool(argv) and argv[0] == "learn"
+    args = build_learn_parser().parse_args(argv[1:]) if learning else build_parser().parse_args(argv)
     try:
-        return run(args)
+        return run_learn(args) if learning else run(args)
     except ClipsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

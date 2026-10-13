@@ -42,3 +42,26 @@ Tests: `.venv/bin/python -m pytest -q` (offline).
   - `--music-in rise|drop` (default rise) and `--rise SECONDS` (default 3): `drop` = music at full volume exactly when the intro ends; `rise` = music fades in from silence to 0.35 under the last `--rise` seconds of the intro, then jumps to full. If `--audio-start` < `--rise` the rise is clamped (note on stderr).
   - `--duration` is the TOTAL length including the intro (error if the intro is not shorter). Cuts are analysed on the song from `--audio-start` for (total - intro).
 - `--dry-run` now prints an object: `{intro, candidates (top 5 detected regions with scores), music_in, rise, t_intro, shots}`; each shot has `section` = `intro` or `music`. Copy a candidate into `--intro`.
+
+## Learn a creator's style
+
+    .venv/bin/python -m clips learn LINK|VIDEO|FOLDER ... -o style.json [--name NAME] [--cache DIR]
+    .venv/bin/python -m clips INPUT --audio SONG --style style.json -o OUT.mp4
+
+- `learn` downloads links with `yt-dlp` into `--cache` (default `~/.cache/clips/refs`, outside
+  the repo; already downloaded videos are reused) and analyses local files in place. Give it
+  several videos from one creator; one profile per creator.
+- What it measures (local FFmpeg + librosa, no models): cuts (frame-difference spikes), how many
+  land on the beat, a fixed beats-per-cut if the creator uses one, how shot length follows
+  loudness (fitted to the auto pacing curve), share of extra off-beat cuts, punch zooms (zoom-out
+  over the first frames of a shot) and their size, white flashes, fit (letterbox / blurred
+  backdrop / crop), a dialogue intro and its length, whether the music rises under it or drops
+  in (and for how long), and how long after the music starts the big drop lands (`lead_in`).
+- `--style` fills every flag you did not give: `--beats-per-cut`, `--punch`/`--flash` (with the
+  learned share of shots and zoom size), `--fit`, intro on/off and `--intro-max`, `--music-in`,
+  `--rise`, and `--audio-start auto` shifted so the song's drop lands `lead_in` seconds into the
+  music, like in the references. Flags you pass always win.
+- The profile is plain JSON (`pacing`, `fx`, `fit`, `intro`, `music`, plus per-video `refs`);
+  edit it by hand if a value looks off. Captions are not learned.
+- Reference videos are third-party media: keep them out of the repo.
+

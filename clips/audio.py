@@ -180,8 +180,10 @@ def pick_section(window: float, song_len: float, beats: np.ndarray, rms: np.ndar
     return float(cands[order[0]]), top
 
 
-def auto_audio_start(path, window: float) -> Tuple[float, List[Tuple[float, float]]]:
-    """Analyse the whole song and pick where the `window`-second excerpt should start."""
+def auto_audio_start(path, window: float, lead: float = 0.0) -> Tuple[float, List[Tuple[float, float]]]:
+    """Analyse the whole song and pick where the `window`-second excerpt should start.
+    lead > 0 (from a style profile): the best drop is found for the part of the window after
+    the lead, and the start moves back to the beat closest to `lead` seconds before it."""
     import librosa
 
     y = decode(path)
@@ -194,7 +196,14 @@ def auto_audio_start(path, window: float) -> Tuple[float, List[Tuple[float, floa
     rms = librosa.feature.rms(y=y, hop_length=HOP)[0]
     rms_times = librosa.frames_to_time(np.arange(rms.size), sr=SR, hop_length=HOP)
     env_times = librosa.frames_to_time(np.arange(env.size), sr=SR, hop_length=HOP)
-    return pick_section(window, song_len, beats, rms, rms_times, np.asarray(env, float), env_times)
+    env = np.asarray(env, float)
+    if lead <= 0:
+        return pick_section(window, song_len, beats, rms, rms_times, env, env_times)
+    drop, top = pick_section(max(window - lead, 1.0), song_len, beats, rms, rms_times, env, env_times)
+    cands = np.concatenate([[0.0], np.asarray(beats, float)])
+    cands = cands[cands <= drop + 1e-6]
+    start = float(cands[np.argmin(np.abs(cands - (drop - lead)))])
+    return start, top   # top = drop candidates; the start is `lead` before the best one
 
 
 # ---------------------------------------------------------------- energy
@@ -261,20 +270,22 @@ def make_hit_fn(env: Optional[np.ndarray], env_times: Optional[np.ndarray]) -> C
 def auto_cuts(beats: np.ndarray, tempo: float, strong_onsets: np.ndarray,
               energy_fn: Callable[[float], float], length: float,
               max_shot: float = AUTO_MAX_SHOT, min_shot: float = MIN_SHOT,
-              hit_fn: Optional[Callable[[float], float]] = None) -> List[float]:
+              hit_fn: Optional[Callable[[float], float]] = None,
+              onset_cuts: bool = True) -> List[float]:
     """Energy-adaptive cut times (seconds, first is 0.0).
 
     Target shot length falls from `max_shot` at energy 0 to one beat at energy 1
     (period + (max_shot - period) * (1 - e)^1.5). After a cut whose hit strength is among the
     top HOLD_FRAC of all cut candidates, the next shot is held for at least
     min(4 beats, HOLD_MAX); at most one such hold per HOLD_MIN_GAP seconds.
+    onset_cuts=False keeps cuts on beats only (no extra cuts on strong off-beat onsets).
     """
     beats = np.asarray(beats, float)
     period = float(np.median(np.diff(beats))) if beats.size > 1 else 60.0 / max(tempo, 1.0)
     fast = max(tempo, 60.0 / period) > TEMPO_GUARD_BPM
     onset_gap = max(min_shot, 0.5 * period)
     cands = [(float(t), True) for t in beats]
-    for t in np.asarray(strong_onsets, float):
+    for t in (np.asarray(strong_onsets, float) if onset_cuts else ()):
         if beats.size == 0 or np.min(np.abs(beats - t)) > 0.06:
             cands.append((float(t), False))
     cands.sort()
@@ -419,7 +430,9 @@ def select_fx(hits: Sequence[float], punch_frac: float = PUNCH_FRAC,
 
 # ---------------------------------------------------------------- top level
 def plan_from_analysis(an: Analysis, fps: int, beats_per_cut: Optional[int] = None,
-                       punch: bool = False, flash: bool = False) -> Plan:
+                       punch: bool = False, flash: bool = False,
+                       max_shot: float = AUTO_MAX_SHOT, onset_cuts: bool = True,
+                       punch_frac: float = PUNCH_FRAC, flash_frac: float = FLASH_FRAC) -> Plan:
     length = an.length
     beats = an.beats[(an.beats >= 0) & (an.beats < length)]
     if beats_per_cut:
@@ -431,7 +444,8 @@ def plan_from_analysis(an: Analysis, fps: int, beats_per_cut: Optional[int] = No
         en = interval_energy(bounds, an.rms, an.rms_times, length)
         efn = make_energy_fn(bounds, en)
         cuts = auto_cuts(beats, an.tempo, an.strong_onsets, efn, length,
-                         hit_fn=make_hit_fn(an.onset_env, an.onset_env_times))
+                         max_shot=max_shot, hit_fn=make_hit_fn(an.onset_env, an.onset_env_times),
+                         onset_cuts=onset_cuts)
         mode = "auto"
     else:
         cuts, mode = fallback_cuts(an.strong_onsets, length)
@@ -444,7 +458,7 @@ def plan_from_analysis(an: Analysis, fps: int, beats_per_cut: Optional[int] = No
     frames = finalize_frames(cuts, length, fps)
     shots = [Shot(i, s, n, fps, round(efn_final(s / fps), 3)) for i, (s, n) in enumerate(frames)]
     hits = hit_strengths([sh.start for sh in shots], an.onset_env, an.onset_env_times)
-    pu, fl = select_fx(hits)
+    pu, fl = select_fx(hits, punch_frac, flash_frac)
     for sh, h, p, f in zip(shots, hits, pu, fl):
         sh.hit = round(h, 3)
         sh.punch = bool(punch and p)
