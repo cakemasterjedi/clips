@@ -137,6 +137,44 @@ DROP_PRE = 4.0           # look-back before a candidate start for the drop contr
 DROP_POST = 2.0          # look-ahead after a candidate start for the drop contrast (s)
 DROP_WEIGHT = 1.0
 ONSET_WEIGHT = 0.5
+REPEAT_WEIGHT = 0.5
+REPEAT_MIN_LAG = 8        # beats; a repeat must be at least this far away (a chorus, not a loop)
+
+
+def repetition_scores(chroma: np.ndarray, beat_times: np.ndarray, candidates: Sequence[float],
+                      window: float) -> np.ndarray:
+    """How strongly the `window` starting at each candidate repeats elsewhere in the song
+    (chorus finder, pychorus/msaf idea): cosine self-similarity of beat-synchronous chroma,
+    best mean along a diagonal at lag >= max(REPEAT_MIN_LAG, window_beats), scaled to 0..1
+    over all beat positions (median -> 0, best -> 1)."""
+    n = chroma.shape[1] if chroma.ndim == 2 else 0
+    out = np.zeros(len(candidates))
+    if n < 2 * REPEAT_MIN_LAG or beat_times.size < 2:
+        return out
+    period = float(np.median(np.diff(beat_times)))
+    k = max(2, int(round(window / period)))
+    c = chroma - chroma.mean(axis=1, keepdims=True)   # drop what every beat shares (drums, hum)
+    c = c / (np.linalg.norm(c, axis=0, keepdims=True) + 1e-9)
+    sim = c.T @ c
+    min_lag = max(REPEAT_MIN_LAG, k)              # the repeat must not overlap the window
+    best = np.zeros(n)
+    for lag in range(min_lag, n - 1):
+        d = np.diagonal(sim, offset=lag)            # d[m] = sim[m, m + lag]
+        if d.size < k:                                # the repeat must fit in the song
+            break
+        w = k
+        cs = np.concatenate([[0.0], np.cumsum(d)])
+        means = (cs[w:] - cs[:-w]) / w                # windows of d starting at m
+        m = np.arange(means.size)
+        np.maximum.at(best, m, means)                 # window at m repeats later at m + lag
+        np.maximum.at(best, m + lag, means)           # ...and the later one repeats m
+    lo, hi = float(np.median(best)), float(best.max())
+    scaled = np.clip((best - lo) / (hi - lo), 0, 1) if hi - lo > 1e-9 else np.zeros(n)
+    for i, t in enumerate(candidates):
+        j = int(np.argmin(np.abs(beat_times[:n] - t)))
+        if abs(beat_times[j] - t) <= period:         # no beats there (e.g. a beatless intro)
+            out[i] = scaled[j]
+    return out
 
 
 def _mean_between(x: np.ndarray, t: np.ndarray, a: float, b: float) -> Optional[float]:
@@ -145,10 +183,12 @@ def _mean_between(x: np.ndarray, t: np.ndarray, a: float, b: float) -> Optional[
 
 
 def section_scores(candidates: Sequence[float], window: float, rms: np.ndarray,
-                   rms_times: np.ndarray, env: np.ndarray, env_times: np.ndarray) -> np.ndarray:
+                   rms_times: np.ndarray, env: np.ndarray, env_times: np.ndarray,
+                   repeat: Optional[np.ndarray] = None) -> np.ndarray:
     """Score each candidate start t for a `window`-second excerpt:
     mean RMS in [t, t+window] + ONSET_WEIGHT * mean onset strength there
-    + DROP_WEIGHT * max(0, RMS just after t - RMS just before t).
+    + DROP_WEIGHT * max(0, RMS just after t - RMS just before t)
+    + REPEAT_WEIGHT * repeat[i] (how much the window recurs: the chorus).
     RMS and onset strength are normalized by their maxima over the whole song. The drop term
     rewards starting right where the song gets louder; at the song start (nothing before t)
     it is 0."""
@@ -162,12 +202,15 @@ def section_scores(candidates: Sequence[float], window: float, rms: np.ndarray,
         post = _mean_between(r, rms_times, t, t + min(DROP_POST, window))
         drop = max(0.0, post - pre) if pre is not None and post is not None else 0.0
         out[i] = body + ONSET_WEIGHT * hits + DROP_WEIGHT * drop
+    if repeat is not None:
+        out += REPEAT_WEIGHT * np.asarray(repeat, float)
     return out
 
 
 def pick_section(window: float, song_len: float, beats: np.ndarray, rms: np.ndarray,
                  rms_times: np.ndarray, env: np.ndarray, env_times: np.ndarray,
-                 rank: int = 0) -> Tuple[float, List[Tuple[float, float]]]:
+                 rank: int = 0, chroma: Optional[np.ndarray] = None
+                 ) -> Tuple[float, List[Tuple[float, float]]]:
     """Best start (on a detected beat, or 0) for a `window`-second excerpt that fits the song.
     Returns (start, top candidates as (start, score), best first). Ties go to the earlier start.
     The candidates are distinct sections, at least min(window/2, 8 s) apart; `rank` picks the
@@ -177,7 +220,9 @@ def pick_section(window: float, song_len: float, beats: np.ndarray, rms: np.ndar
         return 0.0, [(0.0, 0.0)]
     cands = np.unique(np.concatenate([[0.0], np.asarray(beats, float)]))
     cands = cands[(cands >= 0) & (cands <= latest + 1e-6)]
-    scores = section_scores(cands, window, rms, rms_times, env, env_times)
+    rep = (repetition_scores(chroma, np.asarray(beats, float), cands, window)
+           if chroma is not None else None)
+    scores = section_scores(cands, window, rms, rms_times, env, env_times, rep)
     order = sorted(range(cands.size), key=lambda i: (-round(scores[i], 6), cands[i]))
     sep = min(window / 2, 8.0)
     kept: List[int] = []
@@ -208,10 +253,12 @@ def auto_audio_start(path, window: float, lead: float = 0.0,
     rms_times = librosa.frames_to_time(np.arange(rms.size), sr=SR, hop_length=HOP)
     env_times = librosa.frames_to_time(np.arange(env.size), sr=SR, hop_length=HOP)
     env = np.asarray(env, float)
+    chroma = librosa.util.sync(librosa.feature.chroma_stft(y=y, sr=SR, hop_length=HOP),
+                               beat_frames, aggregate=np.median)[:, 1:]   # column j = beat j
     if lead <= 0:
-        return pick_section(window, song_len, beats, rms, rms_times, env, env_times, rank)
+        return pick_section(window, song_len, beats, rms, rms_times, env, env_times, rank, chroma)
     drop, top = pick_section(max(window - lead, 1.0), song_len, beats, rms, rms_times, env,
-                             env_times, rank)
+                             env_times, rank, chroma)
     cands = np.concatenate([[0.0], np.asarray(beats, float)])
     cands = cands[cands <= drop + 1e-6]
     start = float(cands[np.argmin(np.abs(cands - (drop - lead)))])
