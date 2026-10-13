@@ -97,6 +97,23 @@ landscape footage; below 1 shows more of each clip on a blurred, darkened copy o
 narrows the view (`--fov` divided by Z). Applies to the default crop fit; `--fit letterbox`
 and `--fit blur` already show the whole frame. The web UI starts at 0.8.
 
+## GPU (`--gpu`)
+
+On Linux with an AMD or Intel GPU, decoding and H.264 encoding run on the GPU through VAAPI. `--gpu auto` (default) uses it when a quick test encode works and otherwise stays on the CPU; if the GPU fails mid-render, that shot and the rest fall back to the CPU with one log line. `--gpu vaapi` requires it (error instead of fallback), `--gpu off` is CPU only. The web UI has the same choice under More options and shows whether the GPU is usable.
+
+Filters (crop, scale, blur, 360 reframing, captions, slow-mo) stay on the CPU. Measured on a 4-core test box: encoding is about 60% of a flat shot's render and 90% of the final pass, and decoding 5.7K HEVC is about 75% of a 360 shot, so those are what move.
+
+Check your machine:
+
+```bash
+sudo apt install vainfo mesa-va-drivers     # Fedora: libva-utils mesa-va-drivers-freeworld
+vainfo | grep -i h264                       # want VAEntrypointEncSlice for H264
+groups | grep -q render || sudo usermod -aG render,video "$USER"   # then log out and back in
+ffmpeg -hide_banner -encoders | grep h264_vaapi
+```
+
+The bundled ffmpeg from `imageio-ffmpeg` has no VAAPI, so a system ffmpeg is needed. Several GPUs: set `CLIPS_VAAPI_DEVICE=/dev/dri/renderD129`. Quality: GPU encodes use a constant QP equal to the CPU's CRF (18 shots, 20 final), which gives somewhat larger files for the same look.
+
 ## Look options (all off/default unless given)
 
 - `--fit crop|letterbox|blur`: how non-9:16 footage fills 1080x1920 (default crop; blur = darkened blurred backdrop).

@@ -148,6 +148,9 @@
         <div><label>FPS</label><select id="fps"><option>30</option><option>60</option></select></div>
         <div><label>Fit</label><select id="fit"><option value="">default (crop)</option><option>crop</option><option>letterbox</option><option>blur</option><option>track</option></select></div>
         <div><label>Seed</label><input type="number" id="seed"></div>
+        <div><label>GPU (decode + encode)</label>
+          <select id="gpu"><option value="">auto (GPU if it works)</option><option value="vaapi">on (VAAPI, required)</option><option value="off">off (CPU only)</option></select>
+          <div class="hint" id="gpu-hint">checking GPU…</div></div>
       </div>
       <div class="checks">
         <label><input type="checkbox" id="no_intro"> no dialogue intro</label>
@@ -229,7 +232,7 @@ async function post(url, body) {
 // ---- remember the form between visits
 const KEEP = ["cookies","input","music","audio","duration","start_mode","start_at","bpm","zoom","style","variations","captions",
   "subs","sub_style","word_reveal","preview","smart_pick","loop","ramp","punch","flash","shuffle","auto_frame",
-  "subject","subject_desc","fps","fit","seed","no_intro","no_loudnorm","extra","clip"];
+  "subject","subject_desc","fps","fit","seed","gpu","no_intro","no_loudnorm","extra","clip"];
 let options = [], chosen = [];
 function save() {
   const v = {chosen};
@@ -376,7 +379,7 @@ $("pk-files").onchange = async () => {
 function form() {
   const f = {};
   for (const k of ["input","music","audio","duration","bpm","zoom","style","variations","captions","subs","sub_style",
-                   "subject","subject_desc","fps","fit","seed","extra","name"]) f[k] = $(k).value.trim();
+                   "subject","subject_desc","fps","fit","seed","gpu","extra","name"]) f[k] = $(k).value.trim();
   for (const k of ["preview","smart_pick","loop","ramp","punch","flash","shuffle","auto_frame","word_reveal",
                    "no_intro","no_loudnorm"]) f[k] = $(k).checked;
   const m = $("start_mode").value;
@@ -515,6 +518,9 @@ async function refresh() {
 }
 async function start() {
   try { options = await fetch("/api/options").then((r) => r.json()); } catch (e) {}
+  fetch("/api/gpu").then((r) => r.json()).then((g) => {
+    $("gpu-hint").textContent = (g.available ? "available: " : "not available: ") + g.detail;
+  }).catch(() => { $("gpu-hint").textContent = ""; });
   await refresh();
   load();
   setInterval(refresh, 1000);
