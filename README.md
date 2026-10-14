@@ -89,6 +89,27 @@ Cuts fall on a steady grid (`--bpm`, default 120, about 1.6 s shots; `--beats-pe
 too). Without `--duration` the edit is 20 s or the total footage, whichever is shorter.
 `--loop` and `--export-edl` need a song.
 
+    clips FOOTAGE --no-music --cuts footage --duration 15 -o out.mp4
+
+`--cuts footage` lets the footage set the rhythm instead of the grid. Each clip's motion and
+its own sound are analysed (10 steps a second): a shot ends just after the strongest action or
+sound peak near its target length (so a laugh or a hit lands inside the shot), right before a
+hard cut inside the clip, or at the target when nothing happens. Busy, loud stretches get short
+shots (down to about 0.6 s), calm ones up to 3.5 s. The peak a shot ended on is the next shot's
+hit for `--punch`, `--flash` and `--ramp`. Shots walk through the clips in order
+(`--shuffle`/`--seed` work); `--bpm`, `--beats-per-cut` and `--smart-pick` don't apply.
+
+## Clip sound under the song
+
+    clips FOOTAGE --audio song.mp3 --source-audio duck -o out.mp4
+
+By default a song replaces the clips' own sound (except in the dialogue intro).
+`--source-audio mix` keeps each shot's own sound under the song at full level;
+`--source-audio duck` also turns the song down while the clips are loud (speech, laughs,
+engines) and back up after, with a sidechain compressor keyed on the clip sound (`--duck
+light|medium|strong`, default medium). `--source-volume DB` sets the clip sound level
+(default 0, e.g. `-6` for quieter). The dialogue intro is unchanged.
+
 ## Zoom
 
 `--zoom Z` (default 1) sets how far in the frame is. 1 fills 9:16 by cropping the sides of

@@ -37,6 +37,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mute", action="store_true", help="no song and no sound (implies --no-music)")
     p.add_argument("--bpm", type=float, default=audio_mod.NO_MUSIC_BPM,
                    help=f"cut tempo without a song (default {audio_mod.NO_MUSIC_BPM:g})")
+    p.add_argument("--cuts", choices=("grid", "footage"), default="grid",
+                   help="where cuts fall without a song: grid = steady --bpm tempo (default); "
+                        "footage = on the action and sound peaks in the clips themselves")
+    p.add_argument("--source-audio", choices=("off", "mix", "duck"), default="off",
+                   help="the clips' own sound under the song: off (default); mix = both at full "
+                        "level; duck = the song dips while the clips are loud (speech, laughs)")
+    p.add_argument("--source-volume", type=float, default=0.0, metavar="DB",
+                   help="clip sound level in dB with --source-audio (default 0, e.g. -6 quieter)")
+    p.add_argument("--duck", choices=("light", "medium", "strong"), default="medium",
+                   help="how far the song dips under the clip sound with --source-audio duck "
+                        "(default medium)")
     p.add_argument("--zoom", type=float, default=1.0,
                    help="1 = fill the frame (default); below 1 shows more of each clip "
                         "(flat footage gets a blurred backdrop, 360 a wider view), above 1 zooms in")
@@ -303,7 +314,13 @@ def run(args) -> int:
     if args.no_music:
         if args.loop or args.export_edl:
             raise ClipsError("--loop and --export-edl need a song")
+        if args.source_audio != "off":
+            raise ClipsError("--source-audio needs a song (without one the clips' sound is "
+                             "the whole sound track already)")
         return run_no_music(args, knobs)
+    if args.cuts != "grid":
+        raise ClipsError("--cuts footage is for edits without a song (--no-music / --mute); "
+                         "with a song the cuts follow its beat")
     if not args.audio:
         raise ClipsError("pick a song with --audio, or use --no-music / --mute")
     if not Path(args.audio).is_file():
@@ -406,13 +423,15 @@ def run(args) -> int:
                "audio_start_candidates": [{"start": t, "score": sc}
                                           for t, sc in section_cands],
                "music_in": args.music_in, "rise": args.rise,
+               "source_audio": {"mode": args.source_audio, "volume": args.source_volume,
+                                "duck": args.duck},
                "t_intro": round(t_intro, 4), "shots": shots}
         if getattr(args, "_collect", None) is not None:
             args._collect.append(doc)
         else:
             print(json.dumps(doc, indent=2))
         return 0
-    from .render import IntroAudio, render
+    from .render import IntroAudio, SourceAudio, render
 
     print(f"mode={plan.mode} tempo={plan.tempo:.1f} shots={len(plan.shots)} "
           f"length={plan.output_len:.2f}s intro={t_intro:.2f}s", file=sys.stderr)
@@ -425,6 +444,7 @@ def run(args) -> int:
            word_reveal=args.word_reveal, intro=ia,
            loop=args.loop, preview=args.preview, loudnorm=not args.no_loudnorm, views=views,
            zoom=args.zoom, **gpu_kwargs(args),
+           source_audio=SourceAudio(args.source_audio, args.source_volume, args.duck),
            **({"punch_zoom": knobs["punch_zoom"]} if knobs["punch_zoom"] else {}))
     print(f"wrote {args.output}", file=sys.stderr)
     return 0
@@ -446,24 +466,38 @@ def run_no_music(args, knobs) -> int:
     sources = src_mod.discover(args.input)
     total = sum(s.duration for s in sources)
     length = args.duration if args.duration is not None else min(NO_MUSIC_LEN, total)
-    vlog(f"no song: {length:.2f}s on a {args.bpm:g} BPM cut grid")
-    an = audio_mod.grid_analysis(length, args.bpm)
-    plan = audio_mod.plan_from_analysis(an, args.fps, args.beats_per_cut, args.punch, args.flash,
-                                        knobs["max_shot"], False, knobs["punch_frac"],
-                                        knobs["flash_frac"], args.ramp)
-    if args.smart_pick:
-        assigns = footage_mod.assign_smart([s.length for s in plan.shots],
-                                           [s.hit for s in plan.shots], sources,
-                                           footage_mod.analyse(sources), {})
+    if args.cuts == "footage":
+        from . import footcuts
+
+        if args.beats_per_cut or args.smart_pick:
+            print("note: --cuts footage sets its own cuts and footage; --beats-per-cut and "
+                  "--smart-pick are ignored", file=sys.stderr)
+        vlog(f"no song: {length:.2f}s cut on the footage")
+        plan, assigns = footcuts.footage_plan(sources, length, args.fps, knobs["max_shot"],
+                                              args.shuffle, args.seed, args.punch, args.flash,
+                                              knobs["punch_frac"], knobs["flash_frac"], args.ramp)
     else:
-        assigns = src_mod.assign([s.length for s in plan.shots], sources, args.shuffle, args.seed)
+        vlog(f"no song: {length:.2f}s on a {args.bpm:g} BPM cut grid")
+        an = audio_mod.grid_analysis(length, args.bpm)
+        plan = audio_mod.plan_from_analysis(an, args.fps, args.beats_per_cut, args.punch,
+                                            args.flash, knobs["max_shot"], False,
+                                            knobs["punch_frac"], knobs["flash_frac"], args.ramp)
+        if args.smart_pick:
+            assigns = footage_mod.assign_smart([s.length for s in plan.shots],
+                                               [s.hit for s in plan.shots], sources,
+                                               footage_mod.analyse(sources), {})
+        else:
+            assigns = src_mod.assign([s.length for s in plan.shots], sources, args.shuffle,
+                                     args.seed)
     views = build_views(args, plan, sources, assigns)
     if args.dry_run:
-        doc = {"music": None, "sound": "mute" if args.mute else "clips", "bpm": args.bpm,
+        doc = {"music": None, "sound": "mute" if args.mute else "clips", "cuts": args.cuts,
+               "bpm": args.bpm if args.cuts == "grid" else None,
                "fit": args.fit, "zoom": args.zoom,
                "shots": [{"index": s.index, "start": round(s.start, 4), "end": round(s.end, 4),
                           "frames": s.frames, "source": str(sources[a.source].path),
-                          "source_start": a.start, "loop": a.loop, "punch": s.punch,
+                          "source_start": a.start, "loop": a.loop, "hit": s.hit,
+                          "energy": s.energy, "punch": s.punch,
                           "flash": s.flash, "ramp": s.ramp, "view": view_dict(v)}
                          for s, a, v in zip(plan.shots, assigns, views or [None] * len(assigns))]}
         if getattr(args, "_collect", None) is not None:

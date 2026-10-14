@@ -117,7 +117,19 @@
       <div id="start-box"><label>Song start</label>
         <div class="row"><select id="start_mode"><option value="auto">auto (the drop)</option><option value="">beginning</option><option value="at">at seconds…</option></select>
         <input type="number" id="start_at" min="0" step="0.1" placeholder="s" class="hidden"></div></div>
+      <div id="cuts-box" class="hidden"><label>Cut timing</label>
+        <select id="cuts"><option value="">steady tempo</option><option value="footage">follow the footage</option></select>
+        <span class="help">Steady cuts on a fixed beat; follow the footage cuts on the action and sound peaks in your clips.</span></div>
       <div id="bpm-box" class="hidden"><label>Cut tempo without a song (BPM)</label><input type="number" id="bpm" min="20" max="300" step="1" value="120"></div>
+      <div id="sa-box"><label>Clip sound under the song</label>
+        <select id="source_audio"><option value="">off (song only)</option><option value="mix">mix in</option><option value="duck">duck (song dips under it)</option></select>
+        <span class="help">Keep laughs, engines or talking from your clips. Duck lowers the song while they play.</span></div>
+      <div id="duck-box" class="hidden"><label>Ducking strength</label>
+        <select id="duck"><option value="light">light</option><option value="" selected>medium</option><option value="strong">strong</option></select>
+        <span class="help">How far the song drops under the clip sound.</span></div>
+      <div id="sv-box" class="hidden"><label>Clip sound level</label>
+        <select id="source_volume"><option value="6">louder (+6 dB)</option><option value="" selected>as recorded</option><option value="-6">quieter (-6 dB)</option><option value="-12">much quieter (-12 dB)</option></select>
+        <span class="help">Volume of the clips' own sound in the mix.</span></div>
       <div><label>Zoom</label>
         <select id="zoom">
           <option value="1">Fill the frame (crops the sides)</option>
@@ -253,7 +265,8 @@ async function post(url, body) {
 }
 
 // ---- remember the form between visits
-const KEEP = ["cookies","input","music","audio","duration","start_mode","start_at","bpm","zoom","style","variations","captions",
+const KEEP = ["cookies","input","music","audio","duration","start_mode","start_at","bpm","cuts","source_audio",
+  "source_volume","duck","zoom","style","variations","captions",
   "subs","sub_style","word_reveal","preview","smart_pick","loop","ramp","punch","flash","shuffle","auto_frame",
   "subject","subject_desc","fps","fit","seed","gpu","no_intro","no_loudnorm","extra","clip"];
 let options = [], chosen = [];
@@ -274,7 +287,12 @@ function sync() {
   const song = $("music").value === "file";
   $("song-row").classList.toggle("hidden", !song);
   $("start-box").classList.toggle("hidden", !song);
-  $("bpm-box").classList.toggle("hidden", song);
+  $("cuts-box").classList.toggle("hidden", song);
+  $("bpm-box").classList.toggle("hidden", song || $("cuts").value === "footage");
+  const sa = song ? $("source_audio").value : "";
+  $("sa-box").classList.toggle("hidden", !song);
+  $("sv-box").classList.toggle("hidden", !sa);
+  $("duck-box").classList.toggle("hidden", sa !== "duck");
   $("start_at").classList.toggle("hidden", $("start_mode").value !== "at");
   $("cap-box").classList.toggle("hidden", $("captions").value !== "file");
   document.body.classList.toggle("adv", $("adv").checked);
@@ -412,7 +430,7 @@ $("pk-files").onchange = async () => {
 // ---- actions
 function form() {
   const f = {};
-  for (const k of ["input","music","audio","duration","bpm","zoom","style","variations","captions","subs","sub_style",
+  for (const k of ["input","music","audio","duration","bpm","cuts","source_audio","source_volume","duck","zoom","style","variations","captions","subs","sub_style",
                    "subject","subject_desc","fps","fit","seed","gpu","extra","name"]) f[k] = $(k).value.trim();
   for (const k of ["preview","smart_pick","loop","ramp","punch","flash","shuffle","auto_frame","word_reveal",
                    "no_intro","no_loudnorm"]) f[k] = $(k).checked;

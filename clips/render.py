@@ -166,13 +166,21 @@ def _video_chain(ass: Optional[Path], preview: bool = False) -> str:
 
 def final_args(listfile: Path, audio: Path, audio_start: float, length: float, fps: int,
                ass: Optional[Path], out: Path, fade: float = FADE, preview: bool = False,
-               gpu: Optional[Gpu] = None) -> List[str]:
+               gpu: Optional[Gpu] = None, clip_sound: Optional["ClipSound"] = None) -> List[str]:
     fin = f"afade=t=in:st=0:d={fade}," if fade < FADE else ""   # loop: no click at the restart
-    fc = (f"{upload(_video_chain(ass, preview), gpu)};"
-          f"[1:a]atrim=duration={length:.6f},asetpts=PTS-STARTPTS,{fin}"
-          f"afade=t=out:st={max(length - fade, 0):.6f}:d={fade}[a]")
+    if clip_sound is None:
+        fc = (f"{upload(_video_chain(ass, preview), gpu)};"
+              f"[1:a]atrim=duration={length:.6f},asetpts=PTS-STARTPTS,{fin}"
+              f"afade=t=out:st={max(length - fade, 0):.6f}:d={fade}[a]")
+        extra = []
+    else:
+        fc = (f"{upload(_video_chain(ass, preview), gpu)};"
+              f"[1:a]atrim=duration={length:.6f},asetpts=PTS-STARTPTS,{fin}{AUDIO_FMT}[mus0];"
+              + clip_sound_graph("mus0", 2, length, clip_sound, "mus")
+              + f";[mus]alimiter=limit=0.95,afade=t=out:st={max(length - fade, 0):.6f}:d={fade}[a]")
+        extra = ["-i", str(clip_sound.wav)]
     return ["-y", *global_args(gpu), "-f", "concat", "-safe", "0", "-i", str(listfile),
-            "-ss", f"{audio_start:.6f}", "-i", str(audio),
+            "-ss", f"{audio_start:.6f}", "-i", str(audio), *extra,
             "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
             *video_codec(gpu, 30 if preview else 20, PREVIEW_X264 if preview else FINAL_X264),
             "-c:a", "aac", "-b:a", "192k", "-r", str(fps), "-movflags", "+faststart",
@@ -266,9 +274,10 @@ def effective_rise(rise: float, audio_start: float, t_intro: float, music_in: st
 
 
 def intro_audio_graph(lengths: Sequence[float], total: float, t_intro: float, rise: float,
-                      fade: float = FADE) -> str:
+                      fade: float = FADE, clip_sound: Optional["ClipSound"] = None) -> str:
     """Audio part of the final filtergraph -> [a]. Input 1 = song (already seeked to
-    audio_start - rise), inputs 2.. = one per intro region. rise == 0 means `drop`."""
+    audio_start - rise), inputs 2.. = one per intro region, then the clip sound (if any),
+    which is mixed or ducks the song after the intro (it is silent during the intro)."""
     parts = []
     for k, L in enumerate(lengths):
         fo = min(INTRO_FADE_OUT, L / 2)
@@ -287,7 +296,10 @@ def intro_audio_graph(lengths: Sequence[float], total: float, t_intro: float, ri
     if rise > 0:
         vol = f"volume='if(lt(t,{rise:.6f}),{RISE_GAIN}*t/{rise:.6f},1)':eval=frame,"
     parts.append(f"[1:a]atrim=duration={music_len + rise:.6f},asetpts=PTS-STARTPTS,{AUDIO_FMT},"
-                 f"{vol}adelay={round(delay * 44100)}S|{round(delay * 44100)}S[mus]")
+                 f"{vol}adelay={round(delay * 44100)}S|{round(delay * 44100)}S"
+                 + ("[mus]" if clip_sound is None else "[mus0]"))
+    if clip_sound is not None:
+        parts.append(clip_sound_graph("mus0", 2 + len(lengths), total, clip_sound, "mus"))
     parts.append(f"[dlg][mus]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.95,"
                  f"afade=t=out:st={max(total - fade, 0):.6f}:d={fade}[a]")
     return ";".join(parts)
@@ -296,15 +308,18 @@ def intro_audio_graph(lengths: Sequence[float], total: float, t_intro: float, ri
 def final_args_intro(listfile: Path, audio: Path, audio_start: float, total: float, fps: int,
                      ass: Optional[Path], out: Path, intro: IntroAudio, t_intro: float,
                      fade: float = FADE, preview: bool = False,
-                     gpu: Optional[Gpu] = None) -> List[str]:
+                     gpu: Optional[Gpu] = None,
+                     clip_sound: Optional["ClipSound"] = None) -> List[str]:
     rise, _ = effective_rise(intro.rise, audio_start, t_intro, intro.music_in)
     lengths = [L for _, _, L in intro.regions]
     fc = (upload(_video_chain(ass, preview), gpu) + ";" +
-          intro_audio_graph(lengths, total, t_intro, rise, fade))
+          intro_audio_graph(lengths, total, t_intro, rise, fade, clip_sound))
     args = ["-y", *global_args(gpu), "-f", "concat", "-safe", "0", "-i", str(listfile),
             "-ss", f"{audio_start - rise:.6f}", "-i", str(audio)]
     for src, st, L in intro.regions:
         args += ["-ss", f"{st:.6f}", "-t", f"{L:.6f}", "-i", str(src)]
+    if clip_sound is not None:
+        args += ["-i", str(clip_sound.wav)]
     args += ["-filter_complex", fc, "-map", "[v]", "-map", "[a]",
              *video_codec(gpu, 30 if preview else 20, PREVIEW_X264 if preview else FINAL_X264),
              "-c:a", "aac", "-b:a", "192k", "-r", str(fps), "-movflags", "+faststart",
@@ -312,10 +327,47 @@ def final_args_intro(listfile: Path, audio: Path, audio_start: float, total: flo
     return args
 
 
+# ---------------------------------------------------------------- clip sound under the song
+DUCK = {"light": 3.0, "medium": 6.0, "strong": 12.0}   # compressor ratio on the song
+DUCK_THRESHOLD = 0.03     # clip sound above about -30 dBFS starts pulling the song down
+DUCK_ATTACK = 20          # ms
+DUCK_RELEASE = 400        # ms
+
+
+@dataclass
+class SourceAudio:
+    mode: str = "off"           # off | mix | duck
+    volume: float = 0.0         # dB applied to the clip sound
+    duck: str = "medium"        # light | medium | strong
+
+
+@dataclass
+class ClipSound:
+    wav: Path
+    opts: SourceAudio
+
+
+def clip_sound_graph(music: str, idx: int, length: float, cs: ClipSound, out: str) -> str:
+    """[music] + input idx (the clip sound WAV, starting at output time 0) -> [out]. mix: both
+    at their own level; duck: the clip sound also drives a sidechain compressor on the song,
+    so the song dips while the clips are loud (speech, laughs, engines) and comes back after."""
+    o = cs.opts
+    src = (f"[{idx}:a]atrim=duration={length:.6f},asetpts=PTS-STARTPTS,{AUDIO_FMT},"
+           f"volume={o.volume:g}dB")
+    if o.mode == "duck":
+        return (f"{src},asplit=2[cs_mix][cs_key];"
+                f"[{music}][cs_key]sidechaincompress=threshold={DUCK_THRESHOLD}:"
+                f"ratio={DUCK[o.duck]:g}:attack={DUCK_ATTACK}:release={DUCK_RELEASE}[cs_mus];"
+                f"[cs_mus][cs_mix]amix=inputs=2:duration=first:normalize=0[{out}]")
+    return f"{src}[cs_mix];[{music}][cs_mix]amix=inputs=2:duration=first:normalize=0[{out}]"
+
+
 def clip_audio(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignment],
-               out: Path, mute: bool = False, rate: int = 48000) -> Path:
-    """Sound track for an edit without a song: each shot's own audio (silence for clips
-    without sound, or everything with mute), sample-exact per shot, as one WAV."""
+               out: Path, mute: bool = False, rate: int = 48000,
+               silent: Sequence[int] = ()) -> Path:
+    """Each shot's own audio (silence for clips without sound, for shots in `silent`, or for
+    everything with mute), sample-exact per shot, as one WAV: the sound track of an edit
+    without a song, or the clip sound mixed under one (--source-audio)."""
     from .ffmpeg import probe
 
     out = Path(out)
@@ -325,9 +377,9 @@ def clip_audio(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assi
         n = round(sh.frames / plan.fps * rate)            # samples, so parts add up exactly
         part = out.with_name(f"snd_{i:04d}.wav")
         src = sources[a.source].path
-        if not mute and a.source not in has:
+        if not mute and i not in silent and a.source not in has:
             has[a.source] = bool((sources[a.source].info or probe(src)).has_audio)
-        if mute or not has[a.source]:
+        if mute or i in silent or not has[a.source]:
             args = ["-y", "-f", "lavfi", "-i", f"anullsrc=r={rate}:cl=stereo"]
         else:
             args = ["-y", *(["-stream_loop", "-1"] if a.loop else []),
@@ -348,7 +400,8 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
            word_reveal: bool = False, intro: Optional[IntroAudio] = None,
            punch_zoom: float = PUNCH_ZOOM, loop: bool = False, preview: bool = False,
            loudnorm: bool = True, views: Optional[Sequence[Optional[View]]] = None,
-           zoom: float = 1.0, gpu: Optional[Gpu] = None, gpu_required: bool = False) -> None:
+           zoom: float = 1.0, gpu: Optional[Gpu] = None, gpu_required: bool = False,
+           source_audio: Optional["SourceAudio"] = None) -> None:
     workers = workers or max(1, cpu_count() // 2)
     hw = {"gpu": gpu}
     lock = threading.Lock()
@@ -410,6 +463,12 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
                     print(f"shot {k}/{len(segs)}", file=sys.stderr, flush=True)
         lst = tmpd / "list.txt"
         lst.write_text("".join(concat_line(s) for s in segs), encoding="utf-8")
+        cs = None
+        if source_audio is not None and source_audio.mode != "off":
+            print(f"clip sound: {source_audio.mode}", file=sys.stderr)
+            wav = clip_audio(plan, sources, assignments, tmpd / "clipsound.wav",
+                             silent={i for i, s in enumerate(plan.shots) if s.section == "intro"})
+            cs = ClipSound(wav, source_audio)
         print("final pass...", file=sys.stderr)
         fade = LOOP_FADE if loop else FADE
         if intro:
@@ -417,10 +476,10 @@ def render(plan: Plan, sources: Sequence[Source], assignments: Sequence[Assignme
                 print(note, file=sys.stderr)
             encode(lambda g: final_args_intro(lst, Path(audio).resolve(), audio_start,
                                               plan.output_len, plan.fps, ass, out.resolve(),
-                                              intro, plan.t_intro, fade, preview, g))
+                                              intro, plan.t_intro, fade, preview, g, cs))
         else:
             encode(lambda g: final_args(lst, Path(audio).resolve(), audio_start, plan.output_len,
-                                        plan.fps, ass, out.resolve(), fade, preview, g))
+                                        plan.fps, ass, out.resolve(), fade, preview, g, cs))
     if loudnorm:
         was = normalize_loudness(out.resolve(), plan.output_len)
         if was is not None:
