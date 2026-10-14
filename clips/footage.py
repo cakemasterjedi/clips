@@ -34,8 +34,8 @@ class ClipScore:
     score: np.ndarray     # per-frame score, -1 = unusable
 
 
-def read_small(path) -> np.ndarray:
-    vf = f"fps={SFPS},scale={SIZE}:{SIZE},format=gray"
+def read_small(path, fps: float = SFPS) -> np.ndarray:
+    vf = f"fps={fps:g},scale={SIZE}:{SIZE},format=gray"
     cmd = [ffmpeg_exe(), "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(path),
            "-an", "-vf", vf, "-f", "rawvideo", "-"]
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

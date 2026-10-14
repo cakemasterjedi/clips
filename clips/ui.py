@@ -66,7 +66,11 @@ FLAGS = {"smart_pick": "--smart-pick", "loop": "--loop", "ramp": "--ramp", "prev
 # text/select name -> flag (empty = left out)
 VALUES = {"duration": "--duration", "fps": "--fps", "fit": "--fit", "variations": "--variations",
           "subject": "--subject", "subject_desc": "--subject-desc", "sub_style": "--sub-style",
-          "seed": "--seed", "style": "--style", "zoom": "--zoom", "bpm": "--bpm", "gpu": "--gpu"}
+          "seed": "--seed", "style": "--style", "zoom": "--zoom", "bpm": "--bpm", "gpu": "--gpu",
+          "cuts": "--cuts", "source_audio": "--source-audio", "source_volume": "--source-volume",
+          "duck": "--duck"}
+SONG_ONLY = {"source_audio", "source_volume", "duck"}      # left out without a song
+NO_SONG_ONLY = {"bpm", "cuts"}                             # left out with a song
 # flags with their own control on the page (left out of the "add an option" list)
 FORM_DESTS = {"input", "audio", "output", "help", "no_music", "mute", "audio_start", "subs",
               "dry_run", *FLAGS, *VALUES}
@@ -181,7 +185,11 @@ def render_argv(form: dict, renders: Path) -> List[str]:
         v = form.get(key)
         if v is None or str(v).strip() == "" or (key in ("variations", "zoom") and float(v or 1) == 1):
             continue
-        if key == "bpm" and music == "file":
+        if key in (NO_SONG_ONLY if music == "file" else SONG_ONLY):
+            continue
+        if key in ("source_volume", "duck") and str(form.get("source_audio") or "off") == "off":
+            continue
+        if key == "bpm" and str(form.get("cuts") or "") == "footage":
             continue
         argv += [flag, str(v).strip()]
     argv += [flag for key, flag in FLAGS.items() if form.get(key)]
@@ -261,6 +269,7 @@ STAGES = [(r"^variation (\d+)/(\d+)", "variation {0}/{1}"),
           (r"^mode=", "planning cuts"),
           (r"^rendering (\d+) shots", "rendering {0} shots"),
           (r"^shot (\d+)/(\d+)", "rendering shot {0}/{1}"),
+          (r"^clip sound: (\w+)", "cutting the clips' sound ({0})"),
           (r"^final pass", "final pass (joining, captions, sound)"),
           (r"^loudness", "loudness"),
           (r"^building framing proxy", "building the 360 preview"),
