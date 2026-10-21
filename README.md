@@ -16,6 +16,23 @@ password) and otherwise falls back to a bundled build. Re-running is safe.
 To update later: `./update.sh` (pulls the latest code from GitHub, refreshes the
 requirements and prints what changed).
 
+## Install (Windows 10/11)
+
+    git clone https://github.com/cakemasterjedi/clips
+    clips\install.bat        # or double-click install.bat in the folder
+
+It asks whether to add the two optional parts: subject detection (`--subject`, ONNX Runtime
+DirectML, which runs on any GPU including AMD Radeon) and [Ollama](https://ollama.com) with the
+`qwen2.5vl` vision model for `--subject-desc` (~6 GB download). On an AMD card such as the
+RX 6700 XT, Ollama on Windows uses its Vulkan backend with no extra setup. Missing Python,
+ffmpeg (and Git, if you run `install.ps1` on its own outside a checkout) come from winget.
+You get a `clips` command in new terminals and Start menu entries **Clips** (opens the web UI)
+and **Update Clips**. No questions, only what you name:
+
+    powershell -ExecutionPolicy Bypass -File install.ps1 -Yes -Vision -Ollama [-Model llava]
+
+To update later: `update.bat` (or the web UI's Update button).
+
 ## Quick test
 
 Put a few phone clips in a folder and pick a song (mp3/m4a/wav):
@@ -45,7 +62,7 @@ Each job shows its current step, how long it has run, how long since its last ou
 CPU it is using, so a long quiet step is not mistaken for a freeze; tick "advanced log" to see
 every FFmpeg step, and "full log file" opens the whole log (also kept in `~/Videos/clips/logs`).
 Jobs show a rough time left once progress starts moving, and CPU as a share of the whole PC.
-**Update clips** (top right) runs `./update.sh` after any queued renders, then restarts the
+**Update clips** (top right) runs `./update.sh` (Windows: `update.ps1`) after any queued renders, then restarts the
 page's server on the same address with the new version; the page reloads by itself. Keep the terminal open while you use
 the page. It only answers on this PC; to open it from a phone or another computer on your
 network run `clips ui --host 0.0.0.0` and open the full link it prints (it carries a random
