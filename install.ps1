@@ -3,7 +3,7 @@ One-command setup for clips on Windows 10/11 (double-click install.bat, or run i
   .\install.ps1                 core: Python, ffmpeg, .venv, requirements, `clips` command, Start menu
   .\install.ps1 -Vision         + local subject detection (--subject, ONNX Runtime DirectML: any GPU)
   .\install.ps1 -Ollama         + Ollama (local AI for --subject-desc) and its vision model
-  .\install.ps1 -Model NAME     Ollama model to pull (default qwen2.5vl, ~6 GB; "none" skips it)
+  .\install.ps1 -Model NAME     Ollama model to pull (default auto: best fit for your GPU and RAM; "none" skips it)
   .\install.ps1 -Yes            no questions: only what the switches say
   .\install.ps1 -Dir PATH       where to download clips when run outside a checkout (default ~\clips)
 Without -Vision/-Ollama/-Yes it asks about the optional parts. Uses winget; re-running is safe.
@@ -11,7 +11,7 @@ Without -Vision/-Ollama/-Yes it asks about the optional parts. Uses winget; re-r
 param(
     [switch]$Vision,
     [switch]$Ollama,
-    [string]$Model = "qwen2.5vl",
+    [string]$Model = "auto",
     [switch]$Yes,
     [string]$Dir = (Join-Path $HOME "clips"),
     [switch]$Help
@@ -114,7 +114,7 @@ if ($askVision) {
     $Vision = Ask "Install subject detection (--subject; uses your GPU through DirectML, ~60 MB)?"
 }
 if ($askOllama) {
-    $Ollama = Ask "Install Ollama, the free local AI that picks a person from a description (--subject-desc, model ~6 GB)?"
+    $Ollama = Ask "Install Ollama, the free local AI that picks a person from a description (--subject-desc; picks a model that fits your GPU, 2-21 GB download)?"
 }
 
 # --- 2. Python 3.10+ ---------------------------------------------------------------------------
@@ -195,7 +195,54 @@ function Ollama-Up {
     try { Invoke-RestMethod "$h/api/version" -TimeoutSec 2 | Out-Null; return $true } catch { return $false }
 }
 
+# Biggest Ollama vision model that fits: the model plus ~2 GB for the image and context in
+# graphics memory, or in RAM (slower, CPU) when the GPU is too small. qwen2.5vl is what
+# --subject-desc is tested with; moondream is the low-memory fallback.
+function Pick-Model([double]$vramGB, [double]$ramGB) {
+    if ($vramGB -ge 23 -and $ramGB -ge 16) { return "qwen2.5vl:32b" }    # 21 GB
+    if ($vramGB -ge 8) { return "qwen2.5vl:7b" }                          # 6.0 GB
+    if ($vramGB -ge 5) { return "qwen2.5vl:3b" }                          # 3.2 GB
+    if ($ramGB -ge 16) { return "qwen2.5vl:3b" }                          # on the CPU
+    return "moondream"                                                    # 1.7 GB
+}
+
+# Graphics memory of the biggest GPU in GB. Win32_VideoController.AdapterRAM stops at 4 GB,
+# so read the driver's 64-bit qwMemorySize from the display adapter class in the registry.
+function Get-VramGB {
+    $best = 0.0
+    $key = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+    foreach ($k in (Get-ChildItem $key -ErrorAction SilentlyContinue)) {
+        $p = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
+        if (-not $p) { continue }
+        $v = $p."HardwareInformation.qwMemorySize"
+        if (-not $v) { $v = $p."HardwareInformation.MemorySize" }
+        if ($v -is [byte[]]) { $v = [BitConverter]::ToUInt32($v, 0) }
+        if ($v) { $best = [Math]::Max($best, [double]$v / 1GB) }
+    }
+    if ($best -eq 0) {
+        try {
+            foreach ($g in (Get-CimInstance Win32_VideoController)) {
+                if ($g.AdapterRAM) { $best = [Math]::Max($best, [double]$g.AdapterRAM / 1GB) }
+            }
+        } catch { }
+    }
+    return [Math]::Round($best, 1)
+}
+
+function Get-RamGB {
+    try { return [Math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1) }
+    catch { return 0 }
+}
+
 if ($Ollama) {
+    if (-not $Model -or $Model -eq "auto") {
+        $gpuName = "GPU"
+        try { $gpuName = (Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name }) -join ", " } catch { }
+        $vram = Get-VramGB
+        $ram = Get-RamGB
+        $Model = Pick-Model $vram $ram
+        Say "Picking a model: $gpuName, $vram GB graphics memory, $ram GB RAM -> $Model"
+    }
     Say "Installing Ollama"
     if (Has ollama) {
         Write-Host "found $((Get-Command ollama).Source)"
@@ -223,6 +270,12 @@ if ($Ollama) {
             } else {
                 Warn "Ollama is installed but not running yet; start Ollama, then run: ollama pull $Model"
             }
+        }
+        if ($Model -and $Model -ne "none") {
+            # clips --subject-desc uses this model unless --ollama-model says otherwise
+            [Environment]::SetEnvironmentVariable("CLIPS_OLLAMA_MODEL", $Model, "User")
+            $env:CLIPS_OLLAMA_MODEL = $Model
+            Write-Host "clips will use $Model (CLIPS_OLLAMA_MODEL; new terminals)"
         }
         # AMD Radeon on Windows (RX 6700 XT included) runs through Ollama's Vulkan backend: no setup.
     }

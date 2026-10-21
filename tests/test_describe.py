@@ -129,3 +129,13 @@ def test_options_from_desc_implies_auto():
 def test_jpeg_roundtrip():
     img = np.full((31, 41, 3), 128, np.uint8)
     assert D.jpeg(img)[:2] == b"\xff\xd8"
+
+
+def test_ollama_model_default_from_env(monkeypatch):
+    from clips import cli
+
+    monkeypatch.delenv("CLIPS_OLLAMA_MODEL", raising=False)
+    assert cli.build_parser().parse_args(["x"]).ollama_model == "qwen2.5vl"
+    monkeypatch.setenv("CLIPS_OLLAMA_MODEL", "qwen2.5vl:3b")
+    assert cli.build_parser().parse_args(["x"]).ollama_model == "qwen2.5vl:3b"
+    assert cli.build_parser().parse_args(["x", "--ollama-model", "llava"]).ollama_model == "llava"

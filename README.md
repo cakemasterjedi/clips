@@ -22,9 +22,13 @@ requirements and prints what changed).
     clips\install.bat        # or double-click install.bat in the folder
 
 It asks whether to add the two optional parts: subject detection (`--subject`, ONNX Runtime
-DirectML, which runs on any GPU including AMD Radeon) and [Ollama](https://ollama.com) with the
-`qwen2.5vl` vision model for `--subject-desc` (~6 GB download). On an AMD card such as the
-RX 6700 XT, Ollama on Windows uses its Vulkan backend with no extra setup. Missing Python,
+DirectML, which runs on any GPU including AMD Radeon) and [Ollama](https://ollama.com) with a
+vision model for `--subject-desc`. The model is picked from your graphics memory and RAM:
+24 GB+ GPU `qwen2.5vl:32b` (21 GB), 8 GB+ `qwen2.5vl:7b` (6 GB), 5 GB+ or 16 GB RAM
+`qwen2.5vl:3b` (3.2 GB, on the CPU without a big GPU), otherwise `moondream` (1.7 GB); it is
+saved as `CLIPS_OLLAMA_MODEL`, the default for `--ollama-model`. `-Model NAME` overrides the
+pick. On an AMD card such as the RX 6700 XT (12 GB: `qwen2.5vl:7b`), Ollama on Windows uses
+its Vulkan backend with no extra setup. Missing Python,
 ffmpeg (and Git, if you run `install.ps1` on its own outside a checkout) come from winget.
 You get a `clips` command in new terminals and Start menu entries **Clips** (opens the web UI)
 and **Update Clips**. No questions, only what you name:
