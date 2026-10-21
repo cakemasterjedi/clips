@@ -1,0 +1,4 @@
+# Windows scripts keep CRLF so cmd.exe and Windows PowerShell read them right
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.sh text eol=lf

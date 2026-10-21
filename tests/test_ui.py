@@ -396,6 +396,12 @@ def test_update_job(tmp_path, monkeypatch):
         srv.shutdown()
 
 
+def test_updater_cmd_picks_shell():
+    assert ui.updater_cmd(ui.Path("/r/update.sh")) == ["bash", "/r/update.sh"]
+    cmd = ui.updater_cmd(ui.Path("C:/r/update.ps1"))
+    assert cmd[0] == "powershell" and cmd[-2:] == ["-File", str(ui.Path("C:/r/update.ps1"))]
+
+
 def test_gpu_busy_reads_amd_sysfs(tmp_path, monkeypatch):
     for card, val in (("card0", "12\n"), ("card1", "57\n")):
         (tmp_path / card / "device").mkdir(parents=True)

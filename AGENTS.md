@@ -14,6 +14,7 @@
 - Bundled imageio-ffmpeg has no VAAPI; GPU needs system ffmpeg
 - CLIPS_VAAPI_DEVICE env selects render node
 - Repo has no CI; project rule: merge when tests pass
+- Windows: install.ps1/update.ps1 must stay Windows PowerShell 5.1 compatible and ASCII-only; check parse with pwsh
 
 ### Key Decisions
 - Decision: librosa for analysis, FFmpeg subprocess for render, no moviepy — Reason: deterministic, frame-exact, libass for subs (DECISIONS.md rows 1-2)

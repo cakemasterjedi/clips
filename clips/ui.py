@@ -48,7 +48,8 @@ from .frame import send_file
 
 PAGE = Path(__file__).with_name("ui.html")
 REPO = Path(__file__).resolve().parents[1]
-UPDATER = REPO / "update.sh"
+WINDOWS = os.name == "nt"
+UPDATER = REPO / ("update.ps1" if WINDOWS else "update.sh")
 DEFAULT_WORKDIR = Path.home() / "Videos" / "clips"
 MAX_BODY = 1 << 20
 LOG_LINES = 5000
@@ -285,6 +286,12 @@ def stage_of(line: str) -> Optional[str]:
     return None
 
 
+def updater_cmd(script: Path) -> List[str]:
+    if script.suffix == ".ps1":
+        return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
+    return ["bash", str(script)]
+
+
 def group_cpu(pgid: int) -> Optional[float]:
     """CPU seconds used so far by every process in a process group (Linux /proc), so the
     page can show work is happening even when nothing is printed."""
@@ -422,6 +429,9 @@ class Jobs:
             try:
                 if hasattr(os, "killpg"):
                     os.killpg(p.pid, signal.SIGTERM)    # clips and its ffmpeg children
+                elif WINDOWS:                           # no process groups: kill the tree
+                    subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)],
+                                   capture_output=True)
                 else:
                     p.terminate()
             except (ProcessLookupError, PermissionError):
@@ -582,7 +592,10 @@ class UIServer(ThreadingHTTPServer):
                 env["CLIPS_UI_KEY"] = self.key
             print("updated: restarting clips ui...", file=sys.stderr, flush=True)
             self.socket.close()
-            os.execve(sys.executable, [sys.executable, "-m", "clips", *sys.argv[1:]], env)
+            argv = [sys.executable, "-m", "clips", *sys.argv[1:]]
+            if WINDOWS:     # execve there starts a detached process; keep the console attached
+                os._exit(subprocess.call(argv, env=env))
+            os.execve(sys.executable, argv, env)
         threading.Thread(target=go, daemon=True).start()
 
     def lan_urls(self) -> List[str]:
@@ -733,10 +746,10 @@ class Handler(BaseHTTPRequestHandler):
                                        variations=nrefs))
             elif path == "/api/update":
                 if not UPDATER.is_file():
-                    raise ClipsError("this install has no update.sh (it is not a git checkout); "
+                    raise ClipsError(f"this install has no {UPDATER.name} (it is not a git checkout); "
                                      "update it the way you installed it")
                 job = Job("update", [], "update clips")
-                job.raw = ["bash", str(UPDATER)]
+                job.raw = updater_cmd(UPDATER)
                 job = srv.jobs.add(job)
             elif path == "/api/frame":
                 argv = frame_argv(form)
