@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -92,8 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--subject-desc", metavar="TEXT",
                    help="which subject, in words (\"the guy in the red jacket\"): a local vision "
                         "model in Ollama picks the matching one (implies --subject auto)")
-    p.add_argument("--ollama-model", default="qwen2.5vl", metavar="NAME",
-                   help="Ollama vision model for --subject-desc (default qwen2.5vl)")
+    p.add_argument("--ollama-model", default=os.environ.get("CLIPS_OLLAMA_MODEL") or "qwen2.5vl",
+                   metavar="NAME", help="Ollama vision model for --subject-desc (default "
+                   "$CLIPS_OLLAMA_MODEL, which the Windows installer sets, else qwen2.5vl)")
     p.add_argument("--detector", choices=("s", "tiny", "nano"), default="s",
                    help="YOLOX model size for --subject: s (best), tiny, nano (fastest)")
     p.add_argument("--device", choices=("auto", "cpu", "gpu"), default="auto",
@@ -588,8 +590,9 @@ def build_autoframe_parser() -> argparse.ArgumentParser:
     p.add_argument("--subject-desc", metavar="TEXT",
                    help="which subject, in words (\"the guy in the red jacket\"): a local vision "
                         "model in Ollama picks the matching one (implies --subject auto)")
-    p.add_argument("--ollama-model", default="qwen2.5vl", metavar="NAME",
-                   help="Ollama vision model for --subject-desc (default qwen2.5vl)")
+    p.add_argument("--ollama-model", default=os.environ.get("CLIPS_OLLAMA_MODEL") or "qwen2.5vl",
+                   metavar="NAME", help="Ollama vision model for --subject-desc (default "
+                   "$CLIPS_OLLAMA_MODEL, which the Windows installer sets, else qwen2.5vl)")
     p.add_argument("--detector", choices=("s", "tiny", "nano"), default="s",
                    help="YOLOX model size for --subject: s (best), tiny, nano (fastest)")
     p.add_argument("--device", choices=("auto", "cpu", "gpu"), default="auto",

@@ -128,7 +128,8 @@ OPTION_INFO = {
                  "auto uses the GPU when a GPU build of ONNX Runtime is installed.",
                  {"auto": "auto", "cpu": "CPU", "gpu": "GPU"}),
     "--ollama-model": ("Follow subject", "Ollama model",
-                       "Vision model that reads Subject description (default qwen2.5vl).", {}),
+                       "Vision model that reads Subject description (default qwen2.5vl, or the one "
+                       "the installer picked for this PC).", {}),
     "--export-edl": ("Export", "Save an EDL for Resolve / Premiere",
                      "Also write the cut list as FILE.edl to fine-tune the edit in an editor.", {}),
 }
